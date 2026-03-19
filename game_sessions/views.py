@@ -48,7 +48,8 @@ def start_session(request):
         "session_id": session.id,
         "phase": session.phase,
         "energy": session.energy,
-        "message": "ready for the game?"
+        "message": "ready for the game?",
+        "intro_message":level.intro_message
     })
 
 @api_view(['GET'])

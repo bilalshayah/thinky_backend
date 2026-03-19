@@ -5,6 +5,7 @@ class Level(models.Model):
 
     level_number = models.IntegerField()
     required_score = models.IntegerField(default=50)
+    intro_message = models.TextField(default="")
 
 
     def __str__(self):

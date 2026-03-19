@@ -19,7 +19,7 @@ class LevelStatusSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Level
-        fields = ['id', 'level_number', 'required_score', 'is_unlocked', 'is_completed']
+        fields = ['id', 'level_number', 'required_score', 'intro_message', 'is_completed']
 
     def get_is_unlocked(self, obj):
         user = self.context.get('request').user
