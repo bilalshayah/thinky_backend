@@ -6,6 +6,15 @@ class Level(models.Model):
     level_number = models.IntegerField()
     required_score = models.IntegerField(default=50)
     intro_message = models.TextField(default="")
+    planet_name = models.CharField(max_length=100, blank=True, null=True)
+    is_homework= models.BooleanField(default=False)
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name="created_levels"
+    ) # المعلم الذي أنشأ هذا الواجب
 
 
     def __str__(self):
@@ -28,3 +37,20 @@ class StudentSkillMastery(models.Model):
     skill = models.ForeignKey('questions.Skill', on_delete=models.CASCADE)
     mastery_score = models.FloatField(default=0.0) # القيمة التي سيقوم الـ AI بتعديلها
     last_attempt_date = models.DateTimeField(auto_now=True)
+
+
+class PlanetCard(models.Model):
+    planet_name = models.CharField(max_length=100, unique=True)
+    # هذا الحقل يحدد رقم المستوى الذي عند إكماله تفتح البطاقة (آخر مستوى في الكوكب)
+    unlock_at_level_number = models.IntegerField() 
+
+    def __str__(self):
+        return self.planet_name
+    
+class UserUnlockedCard(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    card = models.ForeignKey(PlanetCard, on_delete=models.CASCADE)
+    unlocked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'card')

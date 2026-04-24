@@ -1,19 +1,15 @@
+# admin.py
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User
+from .models import User, Classroom
 
 class CustomUserAdmin(UserAdmin):
-    # إضافة الحقول الجديدة لعرضها في قائمة المستخدمين (Table)
-    list_display = ("username", "email", "gender", "total_points", "is_staff")
-    
-    # إضافة الحقل الجديد داخل صفحة تعديل/إضافة المستخدم
+    # إضافة الحقول الجديدة لواجهة الإدارة
     fieldsets = UserAdmin.fieldsets + (
-        ("Additional Info", {"fields": ("gender", "phone_number", "birthday", "total_points")}),
+        ('Educational Info', {'fields': ('role', 'parent_of', 'gender', 'birthday', 'total_points', 'streak_count')}),
     )
-    
-    # إضافة الحقل عند إنشاء مستخدم جديد من الأدمن
-    add_fieldsets = UserAdmin.add_fieldsets + (
-        ("Additional Info", {"fields": ("gender", "phone_number", "birthday")}),
-    )
+    list_display = ['username', 'email', 'role', 'is_staff']
+    filter_horizontal = ('parent_of',) # لتسهيل اختيار الأطفال للوالد
 
 admin.site.register(User, CustomUserAdmin)
+admin.site.register(Classroom)

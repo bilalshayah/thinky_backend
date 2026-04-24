@@ -37,3 +37,4 @@ def get_my_map(request):
     serializer = LevelStatusSerializer(levels, many=True, context={'request': request})
     
     return Response(serializer.data)
+

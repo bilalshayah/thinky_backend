@@ -6,17 +6,16 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 import requests
 import json
-
 from .models import GameSession
 from .serializers import GameSessionSerializer
-from levels.models import Level, UserLevel
+from levels.models import Level, UserLevel , PlanetCard ,UserUnlockedCard
 from questions.models import Question
 from questions.serializers import QuestionGameSerializer
 from answers.models import AnswerAttempt
 from points.models import Points
 from ai_engine.step2 import extract_behavior_features
 from ai_engine.classifier import AIDecisionEngine
-
+from datetime import date, timedelta
 # --- Serializers ---
 class StartSessionInputSerializer(serializers.Serializer):
     level_id = serializers.IntegerField()
@@ -68,8 +67,8 @@ def get_mission_questions(request, session_id):
     weak_skill = "General"
     current_difficulty = session.next_difficulty 
 
+    # --- منطق الذكاء الاصطناعي الخاص بكِ (بدون تغيير) ---
     past_attempts = AnswerAttempt.objects.filter(session=session).order_by('-id')[:5]
-    
     if past_attempts.exists() and session.phase != "testing":
         attempts_list = [{
             'is_correct': a.is_correct,
@@ -86,7 +85,6 @@ def get_mission_questions(request, session_id):
         session.next_difficulty = decision.get("next_difficulty", "MEDIUM")
         session.save()
 
-        # طلب الرد من الذكاء الاصطناعي
         final_msg = "أنت بطل! استمر 👏"
         try:
             api_key = "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" 
@@ -105,22 +103,37 @@ def get_mission_questions(request, session_id):
             "message": final_msg,
             "student_type": decision.get("group"),
             "weak_skill": weak_skill,
-            "character": decision.get("character_type") # هذا سيخبر فلاتر من يظهر (Villain vs Hakeem)
+            "character": decision.get("character_type") 
         }
 
-    # جلب الأسئلة
+    # --- التعديل الجديد لجلب الأسئلة (الواجب vs العام) ---
     answered_ids = AnswerAttempt.objects.filter(session=session).values_list('question_id', flat=True)
-    base_qs = Question.objects.filter(level=session.levelid).exclude(id__in=answered_ids)
+    level = session.levelid
+    
+    # فحص هل هذا المستوى هو واجب منزلي؟
+    is_homework = getattr(level, 'is_homework', False)
+    teacher = getattr(level, 'teacher', None)
 
+    # القاعدة: إذا كان واجباً، ابحث في أسئلة المعلم أولاً، وإلا ابحث في العام
+    if is_homework and teacher:
+        base_qs = Question.objects.filter(level=level, created_by=teacher).exclude(id__in=answered_ids)
+    else:
+        base_qs = Question.objects.filter(level=level, created_by__isnull=True).exclude(id__in=answered_ids)
+
+    # اختيار الأسئلة بناءً على المرحلة (Phase)
     if session.phase == "training":
+        # محاولة جلب أسئلة للمهارة الضعيفة أولاً
         final_list = list(base_qs.filter(skill__name__iexact=weak_skill, difficulty=current_difficulty)[:3])
         needed = 5 - len(final_list)
+        # تكملة العدد من نفس المجموعة إذا نقصت أسئلة المهارة
         final_list += list(base_qs.exclude(id__in=[q.id for q in final_list])[:needed])
     else:
+        # في مرحلة الاختبار: سحب 5 عشوائي من المجموعة المحددة (سواء معلم أو عام)
         final_list = base_qs.order_by('?')[:5]
     
     return Response({
         "current_phase": session.phase,
+        "is_homework": is_homework, # معلومة مفيدة للفلاتر
         "questions": QuestionGameSerializer(final_list, many=True).data,
         "ai_feedback": ai_feedback_data
     })
@@ -176,7 +189,10 @@ def request_hint(request):
     })
 
 
-
+@extend_schema(
+    request=ANSWERSerializer,
+    responses={200: serializers.Serializer} # استجابة نجاح
+)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def submit_answer(request):
@@ -216,6 +232,12 @@ def submit_answer(request):
         "character": "hakeem" if (not is_correct and question.is_hakeem) else "none"
     })
 
+@extend_schema(
+    request=FINISHSerializer,
+    responses={200: serializers.Serializer} # استجابة نجاح
+)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def finish_stage(request):
@@ -226,14 +248,46 @@ def finish_stage(request):
         return Response({"error": "Not found"}, status=404)
     
     if session.phase == "testing":
+        card_to_unlock = None
+        new_card_unlocked = False
         total = AnswerAttempt.objects.filter(session=session).count()
         session.score = int((session.score / total) * 100) if total > 0 else 0
         passed = session.score >= session.levelid.required_score
         
         if passed:
+            # --- منطق الستريك الجديد يبدأ هنا ---
+            user = request.user
+            today = date.today()
+            yesterday = today - timedelta(days=1)
+
+            if user.last_activity_date == yesterday:
+                # لعب أمس واليوم؟ نزيد الستريك
+                user.streak_count += 1
+            elif user.last_activity_date == today:
+                # لعب اليوم مرة أخرى؟ لا نغير الستريك
+                pass
+            else:
+                # انقطع الستريك أو أول مرة يلعب؟ نبدأ من 1
+                user.streak_count = 1
+            
+            user.last_activity_date = today
+            user.total_points += 50  # إضافة نقاط كمكافأة للستريك
+            user.save()
+            # --- نهاية منطق الستريك ---
+
             ul, _ = UserLevel.objects.get_or_create(user=request.user, level=session.levelid)
             ul.is_completed = True
             ul.save()
+            
+            # ✅ التعديل: تم إخراج البحث عن البطاقة ليكون مستقلاً عن وجود مستوى تالٍ
+            card_to_unlock = PlanetCard.objects.filter(unlock_at_level_number=session.levelid.level_number).first()
+            
+            if card_to_unlock:
+                # نفتح البطاقة للمستخدم إذا لم تكن مفتوحة مسبقاً
+                obj, created = UserUnlockedCard.objects.get_or_create(user=request.user, card=card_to_unlock)
+                new_card_unlocked = created
+
+            # فتح المستوى التالي كما هو في كودك الأصلي
             next_l = Level.objects.filter(level_number=session.levelid.level_number + 1).first()
             if next_l:
                 unl, _ = UserLevel.objects.get_or_create(user=request.user, level=next_l)
@@ -242,7 +296,18 @@ def finish_stage(request):
 
         session.is_active = False
         session.save()
-        return Response({"status": "finished", "passed": passed, "final_score": f"{session.score}%"})
+        
+        # نرسل عدد الستريك الجديد في الرد ليظهر لصديقتك في الـ Frontend
+        return Response({
+            "status": "finished", 
+            "passed": passed, 
+            "final_score": f"{session.score}%",
+            "streak_count": request.user.streak_count,
+            "new_card_unlocked": new_card_unlocked,
+            "card_details": {
+                "planet_name": card_to_unlock.planet_name,
+            } if card_to_unlock else None,
+        })
 
     session.phase = "training" if session.phase == "analysis" else "testing"
     session.save()

@@ -30,3 +30,8 @@ class LevelStatusSerializer(serializers.ModelSerializer):
         user = self.context.get('request').user
         user_level = UserLevel.objects.filter(user=user, level=obj).first()
         return user_level.is_completed if user_level else False
+    
+class CardSerializer(serializers.Serializer):
+        class Meta:
+          model = Level
+          fields = "__all__"

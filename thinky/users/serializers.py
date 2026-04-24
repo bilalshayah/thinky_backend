@@ -12,7 +12,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             "id", "username", "email", "phone_number", 
-            "birthday", "gender", "gender_display", "total_points"
+            "birthday", "gender", "gender_display", "total_points","streak_count","role"
         ]
         extra_kwargs = {
             "password": {"write_only": True}
@@ -20,6 +20,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
+    role = serializers.ChoiceField(choices=User.ROLE_CHOICES, default='STUDENT')
 
     class Meta:
         model = User
@@ -28,27 +29,25 @@ class RegisterSerializer(serializers.ModelSerializer):
             "password", 
             "phone_number", 
             "birthday",
-            "gender"  # ✅ أضفنا الجنس هنا لكي يختاره الطفل عند التسجيل
+            "gender" ,
+            "role"
         ]
 
     def create(self, validated_data):
-        # سحب البيانات مع وضع قيم افتراضية إذا لم توجد
         user = User.objects.create_user(
             username=validated_data["username"],
             password=validated_data["password"],
             phone_number=validated_data.get("phone_number"),
             birthday=validated_data.get("birthday"),
-            gender=validated_data.get("gender", "M") # ✅ حفظ الجنس في قاعدة البيانات
+            gender=validated_data.get("gender", "M") ,
+            role=validated_data.get("role", "STUDENT")
         )
 
         # منطق فتح المستوى الأول (بقي كما هو)
-        first_level = Level.objects.order_by("level_number").first()
-        if first_level:
-            UserLevel.objects.create(
-                user=user,
-                level=first_level,
-                is_unlocked=True
-            )
+        if user.role == 'STUDENT':
+            first_level = Level.objects.order_by("level_number").first()
+            if first_level:
+                UserLevel.objects.get_or_create(user=user, level=first_level, is_unlocked=True)
 
         return user
 

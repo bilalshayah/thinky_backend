@@ -1,5 +1,6 @@
 from django.db import models
 from levels.models import Level
+from django.conf import settings
 class Skill(models.Model):
 
     name = models.CharField(max_length=50)
@@ -42,7 +43,13 @@ class Question(models.Model):
     hint = models.TextField(default=" ")
 
     allowed_time = models.IntegerField(default=30) # الوقت المسموح لحل السؤال بالثواني
-
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True,
+        related_name='questions'
+    )
 
 
     explanation = models.TextField(default=' ')
