@@ -35,7 +35,6 @@ class HINTInputSerializer(serializers.Serializer):
     question_id = serializers.IntegerField(help_text="ID الخاص بالسؤال الذي تريد تلميحاً له")
 
 # --- Views ---
-
 @extend_schema(request=StartSessionInputSerializer, responses={201: GameSessionSerializer})
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -65,75 +64,97 @@ def get_mission_questions(request, session_id):
 
     ai_feedback_data = {}
     weak_skill = "General"
-    current_difficulty = session.next_difficulty 
+    common_mistake = "None"
+    allowed_difficulties = ["EASY", "MEDIUM"] 
 
-    # --- منطق الذكاء الاصطناعي الخاص بكِ (بدون تغيير) ---
-    past_attempts = AnswerAttempt.objects.filter(session=session).order_by('-id')[:5]
-    if past_attempts.exists() and session.phase != "testing":
-        attempts_list = [{
-            'is_correct': a.is_correct,
-            'time_taken': a.time_taken,
-            'hints': 1 if a.hints_used else 0,
-            'allowed_time': 30,
-            'skill': a.question.skill.name if a.question.skill else "General"
-        } for a in past_attempts]
+    # جلب جميع المحاولات السابقة لهذه الجلسة لتجنب خطأ الـ Slice
+    all_session_attempts = AnswerAttempt.objects.filter(session=session).order_by('-id')
+    
+    if all_session_attempts.exists() and session.phase != "testing":
+        # 1. جمع تفاصيل كل الإجابات الخاطئة في الجلسة لتحليلها رقمياً
+        wrong_attempts = all_session_attempts.filter(is_correct=False)
+        wrong_details = []
+        for wa in wrong_attempts:
+            wrong_details.append({
+                "question": wa.question.question_text,
+                "correct_answer": wa.question.correct_answer,
+                "student_answer": getattr(wa, 'student_answer', 'Unknown') # تأكدي من وجود هذا الحقل في Model[cite: 1]
+            })
 
-        features, weak_skill = extract_behavior_features(attempts_list)
+        # 2. تحديد آخر 5 محاولات لتحليل السلوك العام (Profiling)
+        past_attempts = all_session_attempts[:5]
+        attempts_list = []
+        for a in past_attempts:
+            q_time = getattr(a.question, 'allowed_time', 60) 
+            attempts_list.append({
+                'is_correct': a.is_correct,
+                'time_taken': a.time_taken,
+                'hints': 1 if a.hints_used else 0, 
+                'allowed_time': q_time, 
+                'skill': a.question.skill.name if a.question.skill else "General",
+                'mistake_type': getattr(a, 'mistake_type', 'None')
+            })
+
+        # استخراج الميزات السلوكية
+        features, weak_skill, common_mistake = extract_behavior_features(attempts_list)
+        
         engine = AIDecisionEngine()
-        decision = engine.get_decision(features, weak_skill, request.user)
-
-        session.next_difficulty = decision.get("next_difficulty", "MEDIUM")
-        session.save()
-
-        final_msg = "أنت بطل! استمر 👏"
+        # تمرير قائمة الأخطاء الكاملة للمحرك ليقوم بالتحليل الرياضي[cite: 1]
+        decision = engine.get_decision(features, weak_skill, common_mistake, request.user, wrong_details)
+        
+        allowed_difficulties = decision.get("suggested_difficulties", ["EASY", "MEDIUM"])
+        
+        final_msg = "واصل التقدم يا بطل!"
         try:
             api_key = "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" 
             url = "https://openrouter.ai/api/v1/chat/completions"
             data = {
-                "model": "openrouter/auto", 
+                "model": "google/gemini-2.0-flash-lite-001", 
                 "messages": [{"role": "user", "content": decision.get("gemini_prompt")}]
             }
             response = requests.post(url, headers={"Authorization": f"Bearer {api_key}"}, json=data, timeout=10)
             res_json = response.json()
-            final_msg = res_json['choices'][0]['message']['content'].strip()
-        except:
-            final_msg = "واصل التقدم يا ذكي!"
+            if 'choices' in res_json:
+                final_msg = res_json['choices'][0]['message']['content'].strip()
+        except Exception as e:
+            print(f"AI Connection Error: {e}")
 
         ai_feedback_data = {
             "message": final_msg,
             "student_type": decision.get("group"),
             "weak_skill": weak_skill,
-            "character": decision.get("character_type") 
+            "common_mistake": common_mistake
         }
 
-    # --- التعديل الجديد لجلب الأسئلة (الواجب vs العام) ---
+    # --- منطق جلب الأسئلة الجديدة ---
     answered_ids = AnswerAttempt.objects.filter(session=session).values_list('question_id', flat=True)
     level = session.levelid
-    
-    # فحص هل هذا المستوى هو واجب منزلي؟
     is_homework = getattr(level, 'is_homework', False)
     teacher = getattr(level, 'teacher', None)
 
-    # القاعدة: إذا كان واجباً، ابحث في أسئلة المعلم أولاً، وإلا ابحث في العام
     if is_homework and teacher:
-        base_qs = Question.objects.filter(level=level, created_by=teacher).exclude(id__in=answered_ids)
+        initial_qs = Question.objects.filter(level=level, created_by=teacher).exclude(id__in=answered_ids)
     else:
-        base_qs = Question.objects.filter(level=level, created_by__isnull=True).exclude(id__in=answered_ids)
+        initial_qs = Question.objects.filter(level=level, created_by__isnull=True).exclude(id__in=answered_ids)
 
-    # اختيار الأسئلة بناءً على المرحلة (Phase)
+    base_qs = initial_qs.filter(difficulty__in=allowed_difficulties)
+    if not base_qs.exists():
+        base_qs = initial_qs
+
     if session.phase == "training":
-        # محاولة جلب أسئلة للمهارة الضعيفة أولاً
-        final_list = list(base_qs.filter(skill__name__iexact=weak_skill, difficulty=current_difficulty)[:3])
+        final_list = list(base_qs.filter(skill__name__iexact=weak_skill)[:3])
         needed = 5 - len(final_list)
-        # تكملة العدد من نفس المجموعة إذا نقصت أسئلة المهارة
         final_list += list(base_qs.exclude(id__in=[q.id for q in final_list])[:needed])
     else:
-        # في مرحلة الاختبار: سحب 5 عشوائي من المجموعة المحددة (سواء معلم أو عام)
-        final_list = base_qs.order_by('?')[:5]
+        final_list = list(base_qs.order_by('?')[:5])
+    
+    if not final_list:
+        final_list = list(Question.objects.filter(level=level)[:5])
     
     return Response({
         "current_phase": session.phase,
-        "is_homework": is_homework, # معلومة مفيدة للفلاتر
+        "is_homework": is_homework,
+        "allowed_difficulties": allowed_difficulties,
         "questions": QuestionGameSerializer(final_list, many=True).data,
         "ai_feedback": ai_feedback_data
     })
@@ -164,23 +185,10 @@ def request_hint(request):
             "current_points": request.user.total_points
         }, status=402)
 
-    # 2. خصم النقاط وتفعيل ظهور الحكيم في قاعدة البيانات
-    with transaction.atomic():
-        request.user.total_points -= HINT_COST
-        request.user.save()
-        
         # تفعيل ظهور الحكيم لهذا السؤال تحديداً
-        question.is_hakeem = True 
-        question.save()
+    question.is_hakeem = True 
+    question.save()
         
-        # تسجيل العملية في جدول النقاط
-        Points.objects.create(
-            user=request.user, 
-            amount=HINT_COST, 
-            type='spend', 
-            question=question
-        )
-
     return Response({
         "status": "success",
         "hint_text": question.hint,
@@ -250,44 +258,69 @@ def finish_stage(request):
     if session.phase == "testing":
         card_to_unlock = None
         new_card_unlocked = False
-        total = AnswerAttempt.objects.filter(session=session).count()
+        
+        # --- [تعديل ريري: منطق جرد النقاط النهائي] ---
+        attempts = AnswerAttempt.objects.filter(session=session)
+        total = attempts.count()
+        
+        level_points_balance = 0
+        HINT_COST = 10
+
+        with transaction.atomic():
+            for a in attempts:
+                # 1. إضافة نقاط السؤال إذا كانت الإجابة صحيحة
+                if a.is_correct:
+                    level_points_balance += a.question.points
+                    Points.objects.create(
+                        user=request.user, 
+                        amount=a.question.points, 
+                        type='earn', 
+                        question=a.question
+                    )
+                
+                # 2. خصم نقاط التلميح إذا استُخدم
+                if a.hints_used:
+                    level_points_balance -= HINT_COST
+                    Points.objects.create(
+                        user=request.user, 
+                        amount=HINT_COST, 
+                        type='spend', 
+                        question=a.question
+                    )
+
+            # 3. تحديث الرصيد الكلي للمستخدم بـ "صافي" نقاط المرحلة
+            request.user.total_points += level_points_balance
+            request.user.save()
+        # --- [نهاية تعديل النقاط] ---
+
+        # حساب الـ Score كنسبة مئوية (لأغراض النجاح فقط)
         session.score = int((session.score / total) * 100) if total > 0 else 0
         passed = session.score >= session.levelid.required_score
         
         if passed:
-            # --- منطق الستريك الجديد يبدأ هنا ---
+            # --- منطق الستريك ---
             user = request.user
             today = date.today()
             yesterday = today - timedelta(days=1)
 
             if user.last_activity_date == yesterday:
-                # لعب أمس واليوم؟ نزيد الستريك
                 user.streak_count += 1
-            elif user.last_activity_date == today:
-                # لعب اليوم مرة أخرى؟ لا نغير الستريك
-                pass
-            else:
-                # انقطع الستريك أو أول مرة يلعب؟ نبدأ من 1
+            elif user.last_activity_date != today:
                 user.streak_count = 1
             
             user.last_activity_date = today
-            user.total_points += 50  # إضافة نقاط كمكافأة للستريك
+            user.total_points += 50  # مكافأة الستريك
             user.save()
-            # --- نهاية منطق الستريك ---
 
             ul, _ = UserLevel.objects.get_or_create(user=request.user, level=session.levelid)
             ul.is_completed = True
             ul.save()
             
-            # ✅ التعديل: تم إخراج البحث عن البطاقة ليكون مستقلاً عن وجود مستوى تالٍ
             card_to_unlock = PlanetCard.objects.filter(unlock_at_level_number=session.levelid.level_number).first()
-            
             if card_to_unlock:
-                # نفتح البطاقة للمستخدم إذا لم تكن مفتوحة مسبقاً
                 obj, created = UserUnlockedCard.objects.get_or_create(user=request.user, card=card_to_unlock)
                 new_card_unlocked = created
 
-            # فتح المستوى التالي كما هو في كودك الأصلي
             next_l = Level.objects.filter(level_number=session.levelid.level_number + 1).first()
             if next_l:
                 unl, _ = UserLevel.objects.get_or_create(user=request.user, level=next_l)
@@ -297,11 +330,11 @@ def finish_stage(request):
         session.is_active = False
         session.save()
         
-        # نرسل عدد الستريك الجديد في الرد ليظهر لصديقتك في الـ Frontend
         return Response({
             "status": "finished", 
             "passed": passed, 
             "final_score": f"{session.score}%",
+            "points_earned_this_level": level_points_balance, # النقاط الصافية للمرحلة
             "streak_count": request.user.streak_count,
             "new_card_unlocked": new_card_unlocked,
             "card_details": {
@@ -309,6 +342,7 @@ def finish_stage(request):
             } if card_to_unlock else None,
         })
 
+    # التحويل بين المراحل (Analysis -> Training -> Testing)
     session.phase = "training" if session.phase == "analysis" else "testing"
     session.save()
     return Response({"status": "updated", "new_phase": session.phase})
