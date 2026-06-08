@@ -1,6 +1,11 @@
 from rest_framework import serializers
-from .models import Level , UserLevel
+from .models import Level , UserLevel , GameWorld
 
+
+class WorldSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GameWorld
+        fields = "__all__"
 
 class LevelSerializer(serializers.ModelSerializer):
     class Meta:

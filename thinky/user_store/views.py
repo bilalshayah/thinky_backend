@@ -5,6 +5,7 @@ from .serializers import UserSerializer
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes , api_view
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema
 # Create your views here.
 '''''
 class UserStoreListCreateView(ListCreateAPIView):
@@ -15,7 +16,11 @@ class UserStoreDetailView(RetrieveUpdateDestroyAPIView):
     queryset = UserStore.objects.all()
     serializer_class = UserSerializer
 '''
-
+@extend_schema(
+    summary="جلب المشتريات والعناصر الخاصة بالمستخدم الحالي (My Store)",
+    description="تُرجع قائمة كاملة بجميع العناصر والبطاقات الثقافية التي قام الطفل بشرائها من المتجر، حيث يتم تصفيتها تلقائياً بناءً على توكن الحساب المسجل دون الحاجة لإرسال أي معرفات في الرابط.",
+    responses={200: UserSerializer(many=True)}
+)
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_my_items(request):

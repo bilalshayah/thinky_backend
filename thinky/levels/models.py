@@ -1,6 +1,16 @@
 from django.db import models
 from django.conf import settings
 # Create your models here.
+
+class GameWorld(models.Model):
+    name = models.CharField(max_length=100) # الاسم المعروض (الفضاء، الغابة)
+    is_active = models.BooleanField(default=False) # تفعيل العالم برمجياً أو تركه كواجهة فقط
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.name 
+    
+
 class Level(models.Model):
 
     level_number = models.IntegerField()
@@ -15,6 +25,7 @@ class Level(models.Model):
         blank=True, 
         related_name="created_levels"
     ) # المعلم الذي أنشأ هذا الواجب
+    world = models.ForeignKey(GameWorld, on_delete=models.SET_NULL, null=True, blank=True, related_name='levels')
 
 
     def __str__(self):
@@ -54,3 +65,6 @@ class UserUnlockedCard(models.Model):
 
     class Meta:
         unique_together = ('user', 'card')
+
+
+
