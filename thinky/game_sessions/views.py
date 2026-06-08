@@ -1,0 +1,375 @@
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.db import transaction
+from drf_spectacular.utils import extend_schema
+from rest_framework import serializers
+import requests
+import json
+from .models import GameSession
+from .serializers import GameSessionSerializer
+from levels.models import Level, UserLevel , PlanetCard ,UserUnlockedCard
+from questions.models import Question
+from questions.serializers import QuestionGameSerializer
+from answers.models import AnswerAttempt
+from points.models import Points
+from ai_engine.step2 import extract_behavior_features
+from ai_engine.classifier import AIDecisionEngine
+from datetime import date, timedelta
+from django.conf import settings
+
+# --- Serializers ---
+# --- Serializers المخصصة لتوثيق مخرجات الـ AI والأسئلة في Swagger ---
+class AIFeedbackResponseSerializer(serializers.Serializer):
+    message = serializers.CharField(help_text="النص التعليمي أو النفسي المولد من جميناي")
+    student_type = serializers.CharField(help_text="النمط السلوكي الحالي المكتشف للطفل")
+    weak_skill = serializers.CharField(help_text="المهارة الرياضية الضعيفة التي تحتاج تقوية")
+    common_mistake = serializers.CharField(help_text="نوع الخطأ الشائع المرصود")
+    character_type = serializers.CharField(help_text="نوع الشخصية المتحدثة (hakeem أو villain)")
+
+class GetMissionQuestionsResponseSerializer(serializers.Serializer):
+    current_phase = serializers.CharField(help_text="المرحلة الحالية للعبة (analysis, training)")
+    is_homework = serializers.BooleanField(help_text="هل المرحلة واجب بيئي أم لعب حر")
+    allowed_difficulties = serializers.ListField(child=serializers.CharField(), help_text="الصعوبات المسموح بها حالياً")
+    questions = QuestionGameSerializer(many=True, help_text="قائمة الأسئلة الخمسة المخصصة المرجوعة للطفل")
+    ai_feedback = AIFeedbackResponseSerializer(help_text="بيانات رد الذكاء الاصطناعي والدعم النفسي")
+
+
+class StartSessionInputSerializer(serializers.Serializer):
+    level_id = serializers.IntegerField()
+
+class ANSWERSerializer(serializers.Serializer):
+    question_id = serializers.IntegerField()
+    session_id = serializers.IntegerField()
+    selected_answer = serializers.CharField()
+    time_taken = serializers.FloatField()
+
+class FINISHSerializer(serializers.Serializer):
+    session_id = serializers.IntegerField()
+
+class HINTInputSerializer(serializers.Serializer):
+    question_id = serializers.IntegerField(help_text="ID الخاص بالسؤال الذي تريد تلميحاً له")
+    session_id = serializers.IntegerField(help_text="ID الخاص بجلسة اللعبة الحالية")
+
+# --- Views ---
+@extend_schema(request=StartSessionInputSerializer, responses={201: GameSessionSerializer})
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def start_session(request):
+    level_id = request.data.get("level_id")
+    try:
+        level = Level.objects.get(id=level_id)
+    except Level.DoesNotExist:
+        return Response({"error": "level does not exist!"}, status=404)
+
+    session = GameSession.objects.create(
+        user=request.user, levelid=level, phase="analysis", is_active=True
+    )
+    return Response({
+        "session_id": session.id,
+        "phase": session.phase,
+        "intro_message": level.intro_message
+    })
+
+
+@extend_schema(
+    summary="جلب أسئلة المرحلة الحالية ومعالجة رد الذكاء الاصطناعي",
+    description="تقوم الدالة بتحليل أول 5 محاولات للطفل برمجياً وسلوكياً عند انتقاله لطور التدريب، وتحديد نمطه السلوكي، ثم استدعاء جميناي لبناء النص التربوي المبسط وإرجاع قائمة الأسئلة المخصصة لعلاج المهارة الضعيفة.",
+    responses={200: GetMissionQuestionsResponseSerializer}
+)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_mission_questions(request, session_id):
+    try:
+        session = GameSession.objects.get(id=session_id, user=request.user, is_active=True)
+    except GameSession.DoesNotExist:
+        return Response({"error": "Session not found"}, status=404)
+
+    ai_feedback_data = {}
+    weak_skill = "General"
+    common_mistake = "None"
+    allowed_difficulties = ["EASY", "MEDIUM"] 
+
+    all_session_attempts = AnswerAttempt.objects.filter(session=session).order_by('-id')
+    
+    # 🌟 الـ AI يتدخل ويعمل بالكامل فور الانتقال لطور الـ training لبناء خطة الدعم المخصصة
+    if all_session_attempts.exists() and session.phase == "training":
+        wrong_attempts = all_session_attempts.filter(is_correct=False)
+        wrong_details = []
+        for wa in wrong_attempts:
+            wrong_details.append({
+                "question": wa.question.question_text,
+                "correct_answer": wa.question.correct_answer,
+                "student_answer": getattr(wa, 'student_answer', 'Unknown')
+            })
+
+        past_attempts = all_session_attempts[:5]
+        attempts_list = []
+        for a in past_attempts:
+            q_time = getattr(a.question, 'allowed_time', 60) 
+            attempts_list.append({
+                'is_correct': a.is_correct,
+                'time_taken': a.time_taken,
+                'hints': 1 if a.hints_used else 0, 
+                'allowed_time': q_time, 
+                'skill': a.question.skill.name if a.question.skill else "General",
+                'mistake_type': getattr(a, 'mistake_type', 'None')
+            })
+
+        features, weak_skill, common_mistake = extract_behavior_features(attempts_list)
+        
+        engine = AIDecisionEngine()
+        decision = engine.get_decision(features, weak_skill, common_mistake, request.user, wrong_details)
+        
+        allowed_difficulties = decision.get("suggested_difficulties", ["EASY", "MEDIUM"])
+        
+        final_msg = "واصل التقدم يا بطل!"
+        try:
+            api_key = settings.OPENROUTER_API_KEY
+            if not api_key:
+                raise ValueError("OPENROUTER_API_KEY is not configured")
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            data = {
+                "model": "google/gemini-2.0-flash-lite-001", 
+                "messages": [{"role": "user", "content": decision.get("gemini_prompt")}]
+            }
+            response = requests.post(url, headers={"Authorization": f"Bearer {api_key}"}, json=data, timeout=10)
+            res_json = response.json()
+            if 'choices' in res_json:
+                final_msg = res_json['choices'][0]['message']['content'].strip()
+        except Exception as e:
+            print(f"AI Connection Error: {e}")
+
+        # تحديد طبيعة حركة الشخصيات داخل طور التدريب بناءً على التصنيف
+        character_type = "none"
+        if session.phase == "training":
+            if decision.get("group") == "MASTER":
+                character_type = "villain"
+            else:
+                character_type = "hakeem"
+
+        ai_feedback_data = {
+            "message": final_msg,
+            "student_type": decision.get("group"),
+            "weak_skill": weak_skill,
+            "common_mistake": common_mistake,
+            "character_type": character_type  
+        }
+
+    answered_ids = AnswerAttempt.objects.filter(session=session).values_list('question_id', flat=True)
+    level = session.levelid
+    is_homework = getattr(level, 'is_homework', False)
+    teacher = getattr(level, 'teacher', None)
+
+    if is_homework and teacher:
+        initial_qs = Question.objects.filter(level=level, created_by=teacher).exclude(id__in=answered_ids)
+    else:
+        initial_qs = Question.objects.filter(level=level, created_by__isnull=True).exclude(id__in=answered_ids)
+
+    base_qs = initial_qs.filter(difficulty__in=allowed_difficulties)
+    if not base_qs.exists():
+        base_qs = initial_qs
+
+    # سحب الأسئلة لطور التدريب بحيث تركز 3 منها بالكامل على مهارة الطفل الضعيفة المكتشفة
+    if session.phase == "training":
+        final_list = list(base_qs.filter(skill__name__iexact=weak_skill)[:3])
+        needed = 5 - len(final_list)
+        final_list += list(base_qs.exclude(id__in=[q.id for q in final_list])[:needed])
+    else:
+        # طور الاستكشاف الأولي (analysis) يسحب 5 أسئلة منوعة وجديدة
+        final_list = list(base_qs.order_by('?')[:5])
+    
+    if not final_list:
+        final_list = list(Question.objects.filter(level=level)[:5])
+    
+    return Response({
+        "current_phase": session.phase,
+        "is_homework": is_homework,
+        "allowed_difficulties": allowed_difficulties,
+        "questions": QuestionGameSerializer(final_list, many=True).data,
+        "ai_feedback": ai_feedback_data
+    })
+
+
+@extend_schema(request=HINTInputSerializer, responses={200: serializers.Serializer})
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def request_hint(request):
+    question_id = request.data.get("question_id")
+    session_id = request.data.get("session_id")
+    HINT_COST = 10  
+
+    try:
+        question = Question.objects.get(id=question_id)
+        session = GameSession.objects.get(id=session_id, user=request.user)
+    except:
+        return Response({"error": "Question or Session not found"}, status=404)
+
+    if request.user.total_points < HINT_COST:
+        return Response({
+            "status": "insufficient_points",
+            "message": "عذراً! لا تملك نقاطاً كافية لرؤية التلميح. حاول الحل بنفسك لتكسب المزيد!",
+            "current_points": request.user.total_points
+        }, status=402)
+
+    with transaction.atomic():
+        request.user.total_points -= HINT_COST
+        request.user.save()
+        
+        Points.objects.create(
+            user=request.user, 
+            amount=HINT_COST, 
+            type='spend', 
+            question=question
+        )
+
+        attempt, created = AnswerAttempt.objects.get_or_create(
+            user=request.user,
+            session=session,
+            question=question,
+            defaults={'hints_used': True, 'is_correct': False, 'time_taken': 0}
+        )
+        if not created:
+            attempt.hints_used = True
+            attempt.save()
+        
+    return Response({
+        "status": "success",
+        "hint_text": question.hint,
+        "remaining_points": request.user.total_points,
+        "hints_used": True
+    })
+
+@extend_schema(request=ANSWERSerializer, responses={200: serializers.Serializer})
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def submit_answer(request):
+    data = request.data
+    try:
+        session = GameSession.objects.get(id=data.get("session_id"), user=request.user)
+        question = Question.objects.get(id=data.get("question_id"))
+    except:
+        return Response({"error": "Data not found"}, status=404)
+
+    is_correct = (data.get("selected_answer").strip().upper() == question.correct_answer.strip().upper())
+
+    with transaction.atomic():
+        session.energy += 1 if is_correct else 0
+        
+        if is_correct:
+            if not Points.objects.filter(user=request.user, question=question, type='earn').exists():
+                request.user.total_points += question.points
+                Points.objects.create(user=request.user, amount=question.points, type='earn', question=question)
+            session.score += 1
+        
+        existing_attempt = AnswerAttempt.objects.filter(session=session, question=question).first()
+        
+        if existing_attempt:
+            existing_attempt.selected_answer = data.get("selected_answer")
+            existing_attempt.is_correct = is_correct
+            existing_attempt.time_taken = data.get("time_taken")
+            existing_attempt.save()
+        else:
+            AnswerAttempt.objects.create(
+                user=request.user, session=session, question=question,
+                selected_answer=data.get("selected_answer"), is_correct=is_correct,
+                hints_used=data.get("wants_hint", False), time_taken=data.get("time_taken")
+            )
+        
+        total_answered_in_session = AnswerAttempt.objects.filter(session=session).count()
+        
+        phase_updated = False
+        new_phase_name = session.phase
+        
+        # 🌟 الانتقال المباشر والذكي لطور الـ training بعد حل الـ 5 أسئلة الأولى للـ analysis
+        if session.phase == "analysis" and total_answered_in_session >= 5:
+            session.phase = "training"
+            phase_updated = True
+            new_phase_name = "training"
+        # بمجرد تجاوز الـ 10 أسئلة تظل الجلسة ثابتة في طور التدريب بانتظار استدعاء الإنهاء النهائي للمرحلة
+        elif session.phase == "training" and total_answered_in_session >= 10:
+            new_phase_name = "training"
+            
+        session.save()
+        request.user.save()
+
+    total_answered = AnswerAttempt.objects.filter(session=session).count()
+    return Response({
+        "is_correct": is_correct,
+        "live_score": f"{int((session.score/total_answered)*100)}%" if total_answered > 0 else "0%",
+        "explanation": question.explanation if not is_correct else "رائع!",
+        "character": "hakeem" if (not is_correct and existing_attempt and existing_attempt.hints_used) else "none",
+        "phase_updated": phase_updated,
+        "current_phase": new_phase_name,
+        "total_answered_global": total_answered
+    })
+
+@extend_schema(request=FINISHSerializer, responses={200: serializers.Serializer})
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def finish_stage(request):
+    session_id = request.data.get("session_id")
+    try:
+        session = GameSession.objects.get(id=session_id, user=request.user)
+    except:
+        return Response({"error": "Not found"}, status=404)
+    
+    # 🌟 إغلاق وحساب النتيجة عند اكتمال الـ 10 أسئلة بنهاية مرحلة الـ training المحدثة
+    if session.phase == "training":
+        card_to_unlock = None
+        new_card_unlocked = False
+        
+        attempts = AnswerAttempt.objects.filter(session=session)
+        total = attempts.count()
+        
+        session.score = int((session.score / total) * 100) if total > 0 else 0
+        passed = session.score >= session.levelid.required_score
+        
+        if passed:
+            user = request.user
+            today = date.today()
+            yesterday = today - timedelta(days=1)
+
+            if user.last_activity_date == yesterday:
+                user.streak_count += 1
+            elif user.last_activity_date != today:
+                user.streak_count = 1
+            
+            user.last_activity_date = today
+            user.total_points += 50  
+            user.save()
+
+            ul, _ = UserLevel.objects.get_or_create(user=request.user, level=session.levelid)
+            ul.is_completed = True
+            ul.save()
+            
+            card_to_unlock = PlanetCard.objects.filter(unlock_at_level_number=session.levelid.level_number).first()
+            if card_to_unlock:
+                obj, created = UserUnlockedCard.objects.get_or_create(user=request.user, card=card_to_unlock)
+                new_card_unlocked = created
+
+            next_l = Level.objects.filter(level_number=session.levelid.level_number + 1).first()
+            if next_l:
+                unl, _ = UserLevel.objects.get_or_create(user=request.user, level=next_l)
+                unl.is_unlocked = True
+                unl.save()
+
+        session.is_active = False
+        session.save()
+        
+        return Response({
+            "status": "finished", 
+            "passed": passed, 
+            "final_score": f"{session.score}%",
+            "points_earned_this_level": session.score, 
+            "streak_count": request.user.streak_count,
+            "new_card_unlocked": new_card_unlocked,
+            "card_details": {
+                "planet_name": card_to_unlock.planet_name,
+            } if card_to_unlock else None,
+        })
+
+    # حماية إضافية لحماية التدفق البرمجي للجلسة
+    session.phase = "training"
+    session.save()
+    return Response({"status": "updated", "new_phase": session.phase})
