@@ -17,7 +17,7 @@ git push -u origin main
 1. Go to [railway.app](https://railway.app) and sign in with GitHub.
 2. **New Project** → **Deploy from GitHub repo** → select your repository.
 3. Open the service **Settings** and set **Root Directory** to: `thinky`
-4. Add **PostgreSQL** from **+ New** → **Database** → **PostgreSQL**.
+4. (Optional) Add a **Volume** mounted at `/data` so SQLite data survives redeploys.
 
 ### 3. Environment variables
 

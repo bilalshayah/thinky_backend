@@ -6,8 +6,6 @@ from pathlib import Path
 from datetime import timedelta
 import os
 
-import dj_database_url
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get(
@@ -103,12 +101,12 @@ WSGI_APPLICATION = 'thinky.wsgi.application'
 
 AUTH_USER_MODEL = 'users.User'
 
+_db_dir = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', BASE_DIR)
 DATABASES = {
-    'default': dj_database_url.config(
-        default=f'sqlite:///{BASE_DIR / "db.sqlite3"}',
-        conn_max_age=600,
-        ssl_require=not DEBUG,
-    )
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': Path(_db_dir) / 'db.sqlite3',
+    }
 }
 
 AUTH_PASSWORD_VALIDATORS = [
