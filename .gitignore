@@ -30,6 +30,6 @@ media/
 .DS_Store
 Thumbs.db
 
-# ML artifacts
-*.h5
-*.pkl
+# ML artifacts (keep ai_engine model files tracked)
+/autoencoder_hakeem.h5
+/student_groups.pkl
