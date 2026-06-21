@@ -4,6 +4,8 @@ djangorestframework-simplejwt==5.4.0
 drf-spectacular==0.28.0
 gunicorn==23.0.0
 whitenoise==6.8.2
+psycopg2-binary==2.9.10
+dj-database-url==2.3.0
 numpy==2.2.6
 joblib==1.5.1
 requests==2.32.3

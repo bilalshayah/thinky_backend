@@ -21,8 +21,11 @@ ALLOWED_HOSTS = [
     if host.strip()
 ]
 railway_domain = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
+render_domain = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
 if railway_domain:
     ALLOWED_HOSTS.append(railway_domain)
+if render_domain:
+    ALLOWED_HOSTS.append(render_domain)
 if not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ['localhost', '127.0.0.1'] if DEBUG else ['*']
 
@@ -33,6 +36,11 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 if railway_domain:
     CSRF_TRUSTED_ORIGINS.append(f'https://{railway_domain}')
+render_url = os.environ.get('RENDER_EXTERNAL_URL')
+if render_url:
+    CSRF_TRUSTED_ORIGINS.append(render_url.rstrip('/'))
+elif render_domain:
+    CSRF_TRUSTED_ORIGINS.append(f'https://{render_domain}')
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
@@ -101,13 +109,26 @@ WSGI_APPLICATION = 'thinky.wsgi.application'
 
 AUTH_USER_MODEL = 'users.User'
 
-_db_dir = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', BASE_DIR)
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': Path(_db_dir) / 'db.sqlite3',
+_db_dir = os.environ.get('DATABASE_DIR') or os.environ.get('RAILWAY_VOLUME_MOUNT_PATH') or BASE_DIR
+_database_url = os.environ.get('DATABASE_URL')
+
+if _database_url:
+    import dj_database_url
+
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=_database_url,
+            conn_max_age=600,
+            ssl_require=not DEBUG,
+        )
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': Path(_db_dir) / 'db.sqlite3',
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
