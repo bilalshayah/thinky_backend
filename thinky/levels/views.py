@@ -1,6 +1,6 @@
 from django.shortcuts import render
 from .models import Level , UserLevel , GameWorld
-from .serializers import LevelSerializer , UserLevelSerializer
+from .serializers import LevelSerializer , UserLevelSerializer, WorldSerializer
 from rest_framework.generics import ListCreateAPIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from .serializers import LevelStatusSerializer
@@ -51,8 +51,8 @@ def get_game_worlds(request):
 
 
 @extend_schema(
-    summary="جلب مستويات عالم محدد عبر الـ Slug",
-    description="تستقبل الـ Slug الخاص بالعالم (مثل space) لترجع قائمة بجميع المستويات التابعة له إذا كان العالم فعالاً ونشطاً.",
+    summary="جلب مستويات عالم محدد عبر الـ ID",
+    description="تستقبل المعرّف الرقمي الخاص بالعالم لترجع قائمة بجميع المستويات التابعة له إذا كان العالم فعالاً ونشطاً.",
     responses={
         200: WorldLevelsResponseSerializer,
         403: serializers.Serializer(help_text="العالم مغلق حالياً")
@@ -64,7 +64,8 @@ def get_world_levels(request, world_slug):
     """
     جلب مستويات عالم محدد إذا كان فعالاً (مثل الفضاء)
     """
-    world = get_object_or_404(GameWorld, slug=world_slug)
+    # 🌟 التعديل الحاسم هنا لحل كراش الـ 500: البحث باستخدام الـ id بدلاً من الـ slug غير الموجود في الموديل
+    world = get_object_or_404(GameWorld, id=world_slug)
     
     # إذا كان العالم غير مفعل (مثل الغابة)، نرجع استجابة فارغة أو رسالة مغلق
     if not world.is_active:
@@ -76,14 +77,16 @@ def get_world_levels(request, world_slug):
     # جلب مستويات هذا العالم فقط وترتيبها
     levels = world.levels.all().order_by('level_number')
     
-    # هنا يمكنك استخدام السيريالايزر الخاص بالمستويات لديكِ لعرض البيانات للفروتيند
-    # مثال افتراضي:
+    # إرجاع البيانات المنسقة بنجاح للفرونت إند
     return Response({
         "world_name": world.name,
-        "levels": list(levels.values('id', 'level_number', 'intro_message')) # عدلي الحقول حسب الحاجة
+        "levels": list(levels.values('id', 'level_number', 'intro_message')) 
     })
 
-
+class WORLDListCreateView(ListCreateAPIView):
+    queryset = GameWorld.objects.all()
+    serializer_class = WorldSerializer
+    
 class LevelListCreateView(ListCreateAPIView):
     queryset = Level.objects.all()
     serializer_class = LevelSerializer
@@ -116,4 +119,3 @@ def get_my_map(request):
     serializer = LevelStatusSerializer(levels, many=True, context={'request': request})
     
     return Response(serializer.data)
-

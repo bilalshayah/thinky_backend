@@ -1,15 +1,22 @@
-# admin.py
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from .models import User, Classroom
 
+# تسجيل موديل المستخدم المخصص باحترافية لحمايته من كراش الـ 500
+@admin.register(User)
 class CustomUserAdmin(UserAdmin):
-    # إضافة الحقول الجديدة لواجهة الإدارة
+    # إضافة الحقول الجديدة المخصصة (role, total_points, gender) لكي تظهر في لوحة التحكم
     fieldsets = UserAdmin.fieldsets + (
-        ('Educational Info', {'fields': ('role', 'parent_of', 'gender', 'birthday', 'total_points', 'streak_count')}),
+        ('معلومات اللعبة والأدوار', {'fields': ('role', 'gender', 'total_points', 'streak_count', 'parent_of')}),
     )
-    list_display = ['username', 'email', 'role', 'is_staff']
-    filter_horizontal = ('parent_of',) # لتسهيل اختيار الأطفال للوالد
+    add_fieldsets = UserAdmin.add_fieldsets + (
+        ('معلومات اللعبة والأدوار', {'fields': ('role', 'gender', 'total_points', 'streak_count')}),
+    )
+    list_display = ['username', 'email', 'role', 'total_points', 'is_staff']
+    list_filter = ['role', 'is_staff', 'is_superuser']
 
-admin.site.register(User, CustomUserAdmin)
-admin.site.register(Classroom)
+# تسجيل موديل الفصول الدراسية أيضاً لكي تتمكني من التحكم به
+@admin.register(Classroom)
+class ClassroomAdmin(admin.ModelAdmin):
+    list_display = ['id', 'name', 'teacher', 'class_code']
+    search_fields = ['name', 'class_code']
