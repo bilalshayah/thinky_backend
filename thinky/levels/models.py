@@ -6,6 +6,7 @@ class GameWorld(models.Model):
     name = models.CharField(max_length=100) # الاسم المعروض (الفضاء، الغابة)
     is_active = models.BooleanField(default=False) # تفعيل العالم برمجياً أو تركه كواجهة فقط
     description = models.TextField(blank=True, null=True)
+    points_to_open = models.IntegerField(default=0)
 
     def __str__(self):
         return self.name 

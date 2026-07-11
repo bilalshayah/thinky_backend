@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema
+from django.db import models
 
 # --- Serializers المخصصة لتوثيق ردود الخريطة والعوالم في Swagger ---
 class GameWorldResponseSerializer(serializers.Serializer):
@@ -72,79 +73,64 @@ class UserLevelDetailView(RetrieveUpdateDestroyAPIView):
 # =====================================================================
 
 @extend_schema(
-    summary="جلب قائمة العوالم المخصصة للمستخدم الحالي (تحديد المفتوح والمغلق للطفل)",
-    description="تتحقق من هوية الطفل عبر التوكن، وترجع العوالم مع تحديد ما إذا كان العالم مفتوحاً له بناءً على تقدمه في اللعبة.",
+    summary="جلب قائمة العوالم المخصصة للمستخدم الحالي بناءً على النقاط المطلوبة في الموديل",
+    description="تتحقق من إجمالي نقاط الطفل الحالية، وتفتح العوالم الديناميكية بناءً على قيمة النقاط المحددة في الموديل.",
     responses={200: GameWorldResponseSerializer(many=True)}
 )
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_user_worlds(request):
     """
-    جلب العوالم وحالتها الديناميكية الخاصة بكل طفل على حدة (تفتح بالتوالي)
+    جلب العوالم وحالتها الديناميكية بناءً على النقاط المطلوبة المخزنة في الـ Model
     """
     worlds = GameWorld.objects.all().order_by('id')
     user = request.user
     data = []
 
-    # جلب معرفات المستويات التي نجح فيها الطفل أو فتحها بالفعل
-    unlocked_level_ids = UserLevel.objects.filter(
-        user=user, 
-        status__in=['UNLOCKED', 'COMPLETED']
-    ).values_list('level_id', flat=True)
+    if not worlds.exists():
+        return Response([])
 
+    # 1️⃣ حساب إجمالي النقاط الحالية التي جمعها الطفل من المستويات التي أكملها
+    try:
+        # نقوم بجمع النقاط المكتسبة من جدول UserLevel للمستويات الـ COMPLETED فقط
+        total_points = UserLevel.objects.filter(
+            user=user, 
+            status='COMPLETED'
+        ).aggregate(total=models.Sum('points_earned'))['total'] or 0
+    except Exception:
+        total_points = 0
+
+    # 2️⃣ فحص كل عالم ومقارنة نقاط الطفل بالنقاط المطلوبة من الموديل
     for index, w in enumerate(worlds):
-        # العالم الأول (Index 0) يكون مفتوحاً بشكل تلقائي دائماً للجميع كبداية للعبة
+        # 🌟 جلب النقاط المطلوبة لفتح العالم مباشرة من حقل الموديل (points_to_open)
+        # إذا كان اسم الحقل في الموديل عندك مختلف (مثلاً points_required)، قمي بتعديل الاسم هنا فقط.
+        points_needed = getattr(w, 'points_to_open', 0)
+        
         if index == 0:
+            # العالم الأول مفتوح دائماً كترحيب بالطفل عند التسجيل
             is_playable = True
-            message = "جاهز للمغامرة واللعب! 🚀"
+            message = "مرحباً بك في عالمك الأول! جاهز للمغامرة واللعب؟ 🚀"
         else:
-            # العوالم التالية تفتح فقط إذا كان الطفل قد فتح أو أنهى مستويات من العالم السابق له
-            previous_world = worlds[index - 1]
-            prev_world_levels = previous_world.levels.values_list('id', flat=True)
-            
-            # شرط الذكاء: إذا كان هناك تداخل أو نجاح في مستويات العالم السابق، يفتح العالم التالي
-            has_progress_in_prev = any(l_id in unlocked_level_ids for l_id in prev_world_levels)
-            
-            if has_progress_in_prev or w.is_active:
+            # العوالم التالية: نقارن إجمالي نقاط الطفل بالنقاط المطلوبة لفتح هذا العالم
+            if total_points >= points_needed:
                 is_playable = True
-                message = "لقد فتحت هذا العالم بنجاح! 🎉"
+                message = f"رائع! لقد جمعت {total_points} نقطة وفتحت هذا العالم بنجاح 🎉"
             else:
                 is_playable = False
-                message = "🔒 هذا العالم مغلق. أكمل العوالم السابقة أولاً لتفتحه!"
+                points_still_needed = points_needed - total_points
+                message = f"🔒 هذا العالم مغلق. تحتاج إلى جمع {points_still_needed} نقطة إضافية لفتحه!"
 
         data.append({
             "id": w.id,
             "name": w.name,
             "is_playable": is_playable,
+            "points_required": points_needed,
+            "current_user_points": total_points,
             "message": message
         })
         
     return Response(data)
 
-
-@extend_schema(
-    summary="جلب مستويات عالم محدد عبر الـ ID",
-    description="تستقبل المعرّف الرقمي الخاص بالعالم لترجع قائمة بجميع المستويات التابعة له إذا كان العالم فعالاً ونشطاً.",
-    responses={
-        200: WorldLevelsResponseSerializer,
-        403: serializers.Serializer(help_text="العالم مغلق حالياً")
-    }
-)
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_world_levels(request, world_slug):
-    """
-    جلب مستويات عالم محدد عبر الـ ID
-    """
-    world = get_object_or_404(GameWorld, id=world_slug)
-    
-    # جلب مستويات هذا العالم فقط وترتيبها تصاعدياً
-    levels = world.levels.all().order_by('level_number')
-    
-    return Response({
-        "world_name": world.name,
-        "levels": list(levels.values('id', 'level_number', 'intro_message')) 
-    })
 
 
 @extend_schema(

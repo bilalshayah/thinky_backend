@@ -5,7 +5,6 @@ from .views import (
     UserLevelDetailView, 
     UserLevelListCreateView,  
     get_my_map, 
-    get_world_levels, 
     WORLDListCreateView,
     WORLDDetailView,
     get_user_worlds  # الدالة الذكية المخصصة للمستخدم
@@ -14,7 +13,6 @@ from .views import (
 urlpatterns = [
     # 🗺️ مسارات العوالم والمستويات المخصصة للطفل (Game App APIs)
     path('worlds/my/', get_user_worlds, name='get_user_worlds'),
-    path('world-levels/<int:world_slug>/', get_world_levels, name='get_world_levels'),  # تم تحويلها لـ int لتطابق الـ views وتمنع الـ 500
     path('my-map/', get_my_map, name='user-levels-map'),
 
     # 🎛️ مسارات الـ CRUD لإدارة العوالم (لوحة التحكم / Admin)
