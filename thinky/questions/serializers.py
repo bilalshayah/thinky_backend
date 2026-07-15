@@ -11,8 +11,8 @@ class QuestionSerializer(serializers.ModelSerializer):
 class QuestionGameSerializer(serializers.ModelSerializer):
     class Meta:
         model = Question
-        fields = ['id', 'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'hint', 'is_hakeem']
-        #fields = "__all__"
+        #fields = ['id', 'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'hint', 'is_hakeem']
+        fields = "__all__"
 
 class SkillSerializer(serializers.ModelSerializer):
     class Meta:
