@@ -77,6 +77,11 @@ def start_session(request):
     description="تقوم الدالة بتحليل أول 5 محاولات للطفل برمجياً وسلوكياً عند انتقاله لطور التدريب، وتحديد نمطه السلوكي، ثم استدعاء جميناي لبناء النص التربوي المبسط وإرجاع قائمة الأسئلة المخصصة لعلاج المهارة الضعيفة.",
     responses={200: GetMissionQuestionsResponseSerializer}
 )
+@extend_schema(
+    summary="جلب أسئلة المرحلة الحالية ومعالجة رد الذكاء الاصطناعي",
+    description="تقوم الدالة بتحليل أول 5 محاولات للطفل برمجياً وسلوكياً عند انتقاله لطور التدريب، وتحديد نمطه السلوكي، ثم استدعاء جميناي لبناء النص التربوي المبسط وإرجاع قائمة الأسئلة المخصصة لعلاج المهارة الضعيفة.",
+    responses={200: GetMissionQuestionsResponseSerializer}
+)
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_mission_questions(request, session_id):
@@ -116,31 +121,20 @@ def get_mission_questions(request, session_id):
                 'mistake_type': getattr(a, 'mistake_type', 'None')
             })
 
+        # 1. استخراج الميزات الأساسية للمظهر السلوكي
         features, weak_skill, common_mistake = extract_behavior_features(attempts_list)
         
+        # 2. استدعاء محرك الـ AI لاتخاذ القرار وتعيين مجموعة من المجموعات الـ 5[cite: 6]
         engine = AIDecisionEngine()
         decision = engine.get_decision(features, weak_skill, common_mistake, request.user, wrong_details)
         
         allowed_difficulties = decision.get("suggested_difficulties", ["EASY", "MEDIUM"])
         
-        final_msg = "واصل التقدم يا بطل!"
-        try:
-            api_key = settings.OPENROUTER_API_KEY
-            if not api_key:
-                raise ValueError("OPENROUTER_API_KEY is not configured")
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            data = {
-                "model": "google/gemini-2.0-flash-lite-001", 
-                "messages": [{"role": "user", "content": decision.get("gemini_prompt")}]
-            }
-            response = requests.post(url, headers={"Authorization": f"Bearer {api_key}"}, json=data, timeout=10)
-            res_json = response.json()
-            if 'choices' in res_json:
-                final_msg = res_json['choices'][0]['message']['content'].strip()
-        except Exception as e:
-            print(f"AI Connection Error: {e}")
+        # 3. مهمة الباك إند الصافية: تمرير البرومبت الجاهز واستقبال النص النهائي من خادم الـ AI[cite: 6]
+        ready_prompt = decision.get("gemini_prompt", "شجع الطالب بأسلوب مبسط")
+        final_msg = engine.get_ai_response(ready_prompt)
 
-        # تحديد طبيعة حركة الشخصيات داخل طور التدريب بناءً على التصنيف
+        # 4. تحديد طبيعة حركة الشخصيات داخل طور التدريب بناءً على التصنيف المستلم[cite: 6]
         character_type = "none"
         if session.phase == "training":
             if decision.get("group") == "MASTER":
