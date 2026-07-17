@@ -69,28 +69,23 @@ class AIDecisionEngine:
 
     def get_ai_response(self, prompt):
         """
-        توصيل برومبت Thinky بـ OpenRouter سرياً وآمناً عبر ملف البيئة.
+        توصيل برومبت Thinky بـ OpenRouter باستخدام نموذج Gemini المستقر والمتاح في حسابك لتفادي زحام الـ Rate Limit.
         """
-        # النص الاحتياطي الافتراضي في حال حدوث أي خطأ
+        # النص الاحتياطي الافتراضي في حال انقطاع الشبكة أو رجوع رد فارغ
         final_msg = "واصل التقدم يا بطل! محاولتك رائعة جداً وعقلك ذكي ولماح."
         
-        # 🔒 جلب المفتاح السري بأمان
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        
-        if not api_key:
-            print("❌ [AI ENGINE] Error: OPENROUTER_API_KEY is not loaded! Check your .env file setup.")
-            return final_msg
-
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://thinky-game.edu",
-            "X-Title": "Thinky Educational App"
-        }
-        
         try:
+            api_key = "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"
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://thinky-game.edu",
+                "X-Title": "Thinky Educational App"
+            }
+            
+            # 🌟 استخدام المعرف الرسمي المباشر لـ Gemini من قائمة حسابك لتخطي اختناق السيرفرات المشتركة
             data = {
                 "model": "google/gemini-3.1-flash-lite", 
                 "messages": [{"role": "user", "content": prompt}],
@@ -98,7 +93,7 @@ class AIDecisionEngine:
                 "max_tokens": 200
             }
             
-            print(f"\n🚀 [AI ENGINE] Sending Prompt securely using Gemini 3.1 Flash Lite...")
+            print(f"\n🚀 [AI ENGINE] Sending Prompt to OpenRouter using Gemini 3.1 Flash Lite...")
             response = requests.post(url, headers=headers, json=data, timeout=12)
             
             print(f"📡 [AI ENGINE] HTTP Status Code: {response.status_code}")
@@ -111,6 +106,10 @@ class AIDecisionEngine:
                     if raw_content:
                         final_msg = str(raw_content).strip()
                         print("✅ [AI ENGINE] Success: Response fetched beautifully from Gemini!")
+                    else:
+                        print("⚠️ [AI ENGINE] Warning: Content field is empty.")
+                else:
+                    print("⚠️ [AI ENGINE] Warning: Message object is empty.")
             elif 'error' in res_json:
                 print(f"❌ [AI ENGINE] OpenRouter Error: {res_json['error']}")
                 
