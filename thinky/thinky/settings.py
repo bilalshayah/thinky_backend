@@ -9,7 +9,6 @@ import os
 from dotenv import load_dotenv
 import os
 
-# 🌟 تفعيل قراءة ملف .env فوراً عند إقلاع السيرفر
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 BASE_DIR = Path(__file__).resolve().parent.parent
