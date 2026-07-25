@@ -234,6 +234,8 @@ def request_hint(request):
         "hints_used": True
     })
 
+TOTAL_LEVEL_QUESTIONS = 10  # إجمالي أسئلة المستوى (5 تحليل + 5 تدريب)
+
 @extend_schema(request=ANSWERSerializer, responses={200: serializers.Serializer})
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -275,28 +277,34 @@ def submit_answer(request):
         phase_updated = False
         new_phase_name = session.phase
         
-        # 🌟 الانتقال المباشر والذكي لطور الـ training بعد حل الـ 5 أسئلة الأولى للـ analysis
+        # الانتقال المباشر لطور الـ training بعد حل أول 5 أسئلة
         if session.phase == "analysis" and total_answered_in_session >= 5:
             session.phase = "training"
             phase_updated = True
             new_phase_name = "training"
-        # بمجرد تجاوز الـ 10 أسئلة تظل الجلسة ثابتة في طور التدريب بانتظار استدعاء الإنهاء النهائي للمرحلة
-        elif session.phase == "training" and total_answered_in_session >= 10:
+        elif session.phase == "training" and total_answered_in_session >= TOTAL_LEVEL_QUESTIONS:
             new_phase_name = "training"
             
         session.save()
         request.user.save()
 
     total_answered = AnswerAttempt.objects.filter(session=session).count()
+    
+    # 🌟 حساب الـ live_score بناءً على إجمالي الأسئلة الـ 10 للمستوى كاملاً
+    live_score_percentage = int((session.score / TOTAL_LEVEL_QUESTIONS) * 100)
+
     return Response({
         "is_correct": is_correct,
-        "live_score": f"{int((session.score/total_answered)*100)}%" if total_answered > 0 else "0%",
+        "live_score": f"{live_score_percentage}%",
+        "correct_answers_count": session.score,
+        "total_questions_in_level": TOTAL_LEVEL_QUESTIONS,
         "explanation": question.explanation if not is_correct else "رائع!",
         "character": "hakeem" if (not is_correct and existing_attempt and existing_attempt.hints_used) else "none",
         "phase_updated": phase_updated,
         "current_phase": new_phase_name,
         "total_answered_global": total_answered
     })
+
 
 @extend_schema(request=FINISHSerializer, responses={200: serializers.Serializer})
 @api_view(['POST'])
@@ -308,62 +316,66 @@ def finish_stage(request):
     except:
         return Response({"error": "Not found"}, status=404)
     
-    # 🌟 إغلاق وحساب النتيجة عند اكتمال الـ 10 أسئلة بنهاية مرحلة الـ training المحدثة
-    if session.phase == "training":
-        card_to_unlock = None
-        new_card_unlocked = False
-        
-        attempts = AnswerAttempt.objects.filter(session=session)
-        total = attempts.count()
-        
-        session.score = int((session.score / total) * 100) if total > 0 else 0
-        passed = session.score >= session.levelid.required_score
-        
-        if passed:
-            user = request.user
-            today = date.today()
-            yesterday = today - timedelta(days=1)
-
-            if user.last_activity_date == yesterday:
-                user.streak_count += 1
-            elif user.last_activity_date != today:
-                user.streak_count = 1
-            
-            user.last_activity_date = today
-            user.total_points += 50  
-            user.save()
-
-            ul, _ = UserLevel.objects.get_or_create(user=request.user, level=session.levelid)
-            ul.is_completed = True
-            ul.save()
-            
-            card_to_unlock = PlanetCard.objects.filter(unlock_at_level_number=session.levelid.level_number).first()
-            if card_to_unlock:
-                obj, created = UserUnlockedCard.objects.get_or_create(user=request.user, card=card_to_unlock)
-                new_card_unlocked = created
-
-            next_l = Level.objects.filter(level_number=session.levelid.level_number + 1).first()
-            if next_l:
-                unl, _ = UserLevel.objects.get_or_create(user=request.user, level=next_l)
-                unl.is_unlocked = True
-                unl.save()
-
-        session.is_active = False
-        session.save()
-        
+    attempts = AnswerAttempt.objects.filter(session=session)
+    total_answered = attempts.count()
+    
+    # 🌟 حماية أمنية: يمنع إنهاء المستوى أو النجاح فيه إذا لم يحل الطالب الـ 10 أسئلة كاملة
+    if total_answered < TOTAL_LEVEL_QUESTIONS:
         return Response({
-            "status": "finished", 
-            "passed": passed, 
-            "final_score": f"{session.score}%",
-            "points_earned_this_level": session.score, 
-            "streak_count": request.user.streak_count,
-            "new_card_unlocked": new_card_unlocked,
-            "card_details": {
-                "planet_name": card_to_unlock.planet_name,
-            } if card_to_unlock else None,
-        })
+            "status": "incomplete",
+            "message": f"لم تقم بإكمال جميع الأسئلة بعد! لقد أجبت على {total_answered} من أصل {TOTAL_LEVEL_QUESTIONS} أسئلة.",
+            "total_answered": total_answered,
+            "required_questions": TOTAL_LEVEL_QUESTIONS
+        }, status=400)
 
-    # حماية إضافية لحماية التدفق البرمجي للجلسة
-    session.phase = "training"
+    # 🌟 حساب النتيجة النهائية قسمةً على 10 (إجمالي أسئلة المستوى)
+    card_to_unlock = None
+    new_card_unlocked = False
+    
+    final_score_percentage = int((session.score / TOTAL_LEVEL_QUESTIONS) * 100)
+    session.score = final_score_percentage
+    passed = session.score >= session.levelid.required_score
+    
+    if passed:
+        user = request.user
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
+        if user.last_activity_date == yesterday:
+            user.streak_count += 1
+        elif user.last_activity_date != today:
+            user.streak_count = 1
+        
+        user.last_activity_date = today
+        user.total_points += 50  
+        user.save()
+
+        ul, _ = UserLevel.objects.get_or_create(user=request.user, level=session.levelid)
+        ul.is_completed = True
+        ul.save()
+        
+        card_to_unlock = PlanetCard.objects.filter(unlock_at_level_number=session.levelid.level_number).first()
+        if card_to_unlock:
+            obj, created = UserUnlockedCard.objects.get_or_create(user=request.user, card=card_to_unlock)
+            new_card_unlocked = created
+
+        next_l = Level.objects.filter(level_number=session.levelid.level_number + 1).first()
+        if next_l:
+            unl, _ = UserLevel.objects.get_or_create(user=request.user, level=next_l)
+            unl.is_unlocked = True
+            unl.save()
+
+    session.is_active = False
     session.save()
-    return Response({"status": "updated", "new_phase": session.phase})
+    
+    return Response({
+        "status": "finished", 
+        "passed": passed, 
+        "final_score": f"{session.score}%",
+        "points_earned_this_level": session.score, 
+        "streak_count": request.user.streak_count,
+        "new_card_unlocked": new_card_unlocked,
+        "card_details": {
+            "planet_name": card_to_unlock.planet_name,
+        } if card_to_unlock else None,
+    })
