@@ -2,12 +2,16 @@
 Django settings for thinky project.
 """
 
-from pathlib import Path
-from datetime import timedelta
 import os
+from datetime import timedelta
+from pathlib import Path
 
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from .env file
+load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.environ.get(
     'SECRET_KEY',
@@ -56,7 +60,7 @@ INSTALLED_APPS = [
     'store',
     'ai_engine',
     'points',
-    "user_store",
+    'user_store',
     'rest_framework',
     'django.contrib.admin',
     'django.contrib.auth',
