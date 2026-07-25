@@ -7,7 +7,9 @@ from .views import (
     get_my_map, 
     WORLDListCreateView,
     WORLDDetailView,
-    get_user_worlds  # الدالة الذكية المخصصة للمستخدم
+    get_user_worlds ,
+    CardDetailView,
+    CardListCreateView
 )
 
 urlpatterns = [
@@ -26,4 +28,7 @@ urlpatterns = [
     # 📊 مسارات الـ CRUD لمتابعة سجلات تقدم الطلاب
     path('user-levels/', UserLevelListCreateView.as_view()),
     path('user-levels/<int:pk>/', UserLevelDetailView.as_view()),
+    path('cards/', CardListCreateView.as_view()),
+    path('card/<int:pk>/', CardDetailView.as_view()),
+    
 ]

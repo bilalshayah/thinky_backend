@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Level , UserLevel , GameWorld
+from .models import Level , UserLevel , GameWorld, PlanetCard
 
 
 class WorldSerializer(serializers.ModelSerializer):
@@ -36,7 +36,8 @@ class LevelStatusSerializer(serializers.ModelSerializer):
         user_level = UserLevel.objects.filter(user=user, level=obj).first()
         return user_level.is_completed if user_level else False
     
-class CardSerializer(serializers.Serializer):
-        class Meta:
-          model = Level
-          fields = "__all__"
+# ✅ التصحيح
+class CardSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlanetCard
+        fields = "__all__"

@@ -1,8 +1,8 @@
 from django.shortcuts import render
-from .models import Level , UserLevel , GameWorld
+from .models import Level , UserLevel , GameWorld, PlanetCard
 from .serializers import LevelSerializer , UserLevelSerializer, WorldSerializer
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
-from .serializers import LevelStatusSerializer
+from .serializers import LevelStatusSerializer , CardSerializer
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -67,6 +67,15 @@ class UserLevelDetailView(RetrieveUpdateDestroyAPIView):
     queryset = UserLevel.objects.all()
     serializer_class = UserLevelSerializer
 
+class CardListCreateView(ListCreateAPIView):
+    """إضافة بطاقة جديدة أو عرض كل البطاقات العامة"""
+    queryset = PlanetCard.objects.all()
+    serializer_class = CardSerializer
+
+class CardDetailView(RetrieveUpdateDestroyAPIView):
+    """جلب بطاقة محددة بالـ ID، تعديله، أو حذفه"""
+    queryset = PlanetCard.objects.all()
+    serializer_class = CardSerializer
 
 # =====================================================================
 # 🌟 3. الـ APIs الذكية المخصصة للعبة (الفرونت إند والـ Flutter)

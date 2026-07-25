@@ -53,7 +53,6 @@ class StudentSkillMastery(models.Model):
 
 class PlanetCard(models.Model):
     planet_name = models.CharField(max_length=100, unique=True)
-    # هذا الحقل يحدد رقم المستوى الذي عند إكماله تفتح البطاقة (آخر مستوى في الكوكب)
     unlock_at_level_number = models.IntegerField() 
 
     def __str__(self):
