@@ -1,64 +1,65 @@
-# views.py
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
-from rest_framework import status, serializers
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from .serializers import RegisterSerializer, LoginSerializer, UserSerializer
-from rest_framework.generics import RetrieveUpdateDestroyAPIView, ListCreateAPIView
-from .models import User, Classroom 
-from datetime import date
-from drf_spectacular.utils import extend_schema, OpenApiTypes
-from levels.models import UserUnlockedCard
-from game_sessions.models import GameSession
 import random
 import string
+from datetime import date, timedelta
+
+from drf_spectacular.utils import OpenApiTypes, extend_schema
+from game_sessions.models import GameSession
+from levels.models import UserUnlockedCard
 from questions.models import Question
 from questions.serializers import QuestionBankSerializer
+from rest_framework import serializers, status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
 
-# --- سيريالايزر مساعد لعرض بيانات الملف الشخصي في Swagger ---
+from .models import Classroom, User
+from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
+
+
+# --- Serializers ---
 class UserProfileResponseSerializer(serializers.Serializer):
     username = serializers.CharField()
     age = serializers.IntegerField()
     total_points = serializers.IntegerField()
     gender = serializers.CharField()
     gender_display = serializers.CharField()
+    streak_count = serializers.IntegerField()
 
 
 class ClassSerializer(serializers.Serializer):
     name = serializers.CharField()
 
+
 class JoinClassSerializer(serializers.Serializer):
     code = serializers.CharField()
 
 
-# =====================================================================
-# 🌟 التعديل الجديد: السيريلايزرز المخصصة للواجب المركب (جاهز ومكتوب يدوياً)
-# =====================================================================
-
 class CustomTeacherQuestionSerializer(serializers.Serializer):
-    """سيريلايزر خاص باستقبال الأسئلة التي يكتبها المعلم بنفسه يدوياً"""
     question_text = serializers.CharField(required=True)
     option_a = serializers.CharField(required=True)
     option_b = serializers.CharField(required=True)
     option_c = serializers.CharField(required=True)
     option_d = serializers.CharField(required=True)
-    correct_answer = serializers.CharField(max_length=1)  # A, B, C, or D
+    correct_answer = serializers.CharField(max_length=1)
     hint = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class CompleteHomeworkSerializer(serializers.Serializer):
-    """السيريلايزر الرئيسي الشامل لاستقبال كل خيارات المعلم للواجب"""
     level_id = serializers.IntegerField(required=True)
-    # قائمة الـ IDs للأسئلة الجاهزة المأخوذة من بنك الأسئلة
     question_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False, default=list,
         help_text="قائمة بـ IDs الأسئلة المختارة"
     )
-    # قائمة بالأسئلة الجديدة التي كتبها المعلم يدوياً في الواجهة
     custom_questions = CustomTeacherQuestionSerializer(many=True, required=False, default=list)
 
 
-# --- الـ Views ---
+class AddChildInputSerializer(serializers.Serializer):
+    child_username = serializers.CharField(help_text="اسم المستخدم الخاص بالطفل")
+    child_password = serializers.CharField(write_only=True, help_text="كلمة مرور حساب الطفل للتأكيد")
+
+
+# --- Views ---
 
 @extend_schema(
     request=RegisterSerializer,
@@ -102,29 +103,34 @@ def login(request):
 
 
 class UserListCreateView(ListCreateAPIView):
-    """عرض قائمة المستخدمين أو إنشاء مستخدم جديد"""
     queryset = User.objects.all()
     serializer_class = UserSerializer
 
 
 class UserDetailView(RetrieveUpdateDestroyAPIView):
-    """عرض، تحديث، أو حذف بيانات مستخدم محدد"""
     queryset = User.objects.all()
     serializer_class = UserSerializer
 
 
 @extend_schema(
     responses={200: UserProfileResponseSerializer},
-    description="جلب بيانات الملف الشخصي للمستخدم وحساب عمره وجنسه"
+    description="جلب بيانات الملف الشخصي للمستخدم وحساب عمره وجنسه وإعادة ضبط الستريك إذا انقطع"
 )
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def user_profile(request):
     user = request.user
+    today = date.today()
     age = None
 
+    # 🌟 Duolingo Streak Reset: Reset to 0 if user missed more than 1 day
+    if user.last_activity_date:
+        days_passed = (today - user.last_activity_date).days
+        if days_passed > 1:
+            user.streak_count = 0
+            user.save(update_fields=['streak_count'])
+
     if user.birthday:
-        today = date.today()
         birthday = user.birthday
         age = today.year - birthday.year - (
             (today.month, today.day) < (birthday.month, birthday.day)
@@ -145,10 +151,8 @@ def user_profile(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_user_library(request):
-    # جلب السجلات المرتبطة بالمستخدم مع بيانات البطاقة
     unlocked_entries = UserUnlockedCard.objects.filter(user=request.user).select_related('card')
     
-    # تنسيق البيانات لترسل لـ Flutter
     cards_data = []
     for entry in unlocked_entries:
         cards_data.append({
@@ -172,13 +176,9 @@ def teacher_dashboard(request):
     
     results = []
     for classroom in classrooms:
-        # جلب جميع الطلاب في هذا الفصل
         student_ids = classroom.students.values_list('id', flat=True)
-        
-        # جلب جميع محاولات هؤلاء الطلاب في جميع المستويات
         all_sessions = GameSession.objects.filter(user_id__in=student_ids, is_active=False).select_related('user', 'levelid')
         
-        # تنظيم البيانات حسب المستوى
         level_reports = {}
         for s in all_sessions:
             lv_num = s.levelid.level_number
@@ -213,7 +213,6 @@ def parent_dashboard(request):
     
     children_stats = []
     for child in children:
-        # جلب جميع الجلسات المنتهية لهذا الطفل مرتبة من الأحدث
         sessions = GameSession.objects.filter(user=child, is_active=False).select_related('levelid').order_by('-id')
         
         level_history = []
@@ -221,14 +220,14 @@ def parent_dashboard(request):
             level_history.append({
                 "level_number": s.levelid.level_number,
                 "score": f"{s.score}%",
-                "date": s.created_at.strftime("%Y-%m-%d")
             })
 
         children_stats.append({
             "name": child.username,
             "total_points": child.total_points,
             "streak": child.streak_count,
-            "level_performance": level_history
+            "level_performance": level_history,
+            #"date": s.created_at.strftime("%Y-%m-%d")
         })
 
     return Response(children_stats)
@@ -241,7 +240,6 @@ def parent_dashboard(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_classroom(request):
-    # التأكد أن المستخدم معلم
     if request.user.role != 'TEACHER':
         return Response({"error": "Only teachers can create classes"}, status=403)
     
@@ -249,7 +247,6 @@ def create_classroom(request):
     if not name:
         return Response({"error": "Class name is required"}, status=400)
 
-    # توليد كود عشوائي فريد من 6 أرقام وحروف
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
     
     classroom = Classroom.objects.create(
@@ -272,23 +269,17 @@ def create_classroom(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def join_classroom(request):
-    # التأكد أن المستخدم طالب
     if request.user.role != 'STUDENT':
         return Response({"error": "Only students can join classes"}, status=403)
     
     code = request.data.get("class_code")
     try:
         classroom = Classroom.objects.get(class_code=code)
-        classroom.students.add(request.user) # ربط الطالب بالفصل
+        classroom.students.add(request.user)
         return Response({"message": f"Successfully joined {classroom.name}"})
     except Classroom.DoesNotExist:
         return Response({"error": "Invalid class code"}, status=404)
 
-
-# 1️⃣ تحديث السيريلايزر ليطلب اسم المستخدم وكلمة مرور الطفل معاً
-class AddChildInputSerializer(serializers.Serializer):
-    child_username = serializers.CharField(help_text="اسم المستخدم الخاص بالطفل")
-    child_password = serializers.CharField(write_only=True, help_text="كلمة مرور حساب الطفل للتأكيد")
 
 @extend_schema(
     request=AddChildInputSerializer,
@@ -309,14 +300,11 @@ def add_child(request):
     child_password = serializer.validated_data.get("child_password")
     
     try:
-        # جلب حساب الطفل
         child = User.objects.get(username=child_username, role='STUDENT')
         
-        # 🔒 التحقق السريع من صحة كلمة المرور باستخدام دالة دجانغو الجاهزة
         if not child.check_password(child_password):
             return Response({"error": "كلمة المرور الخاصة بالطفل غير صحيحة!"}, status=401)
             
-        # إذا كانت صحيحة يتم الربط فوراً
         request.user.parent_of.add(child) 
         
         return Response({"message": f"Successfully linked with child {child_username}"})
@@ -331,11 +319,9 @@ def add_child(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_level_question_bank(request, level_id):
-    """جلب كل الأسئلة العامة لمستوى معين ليختار منها المعلم"""
     if request.user.role != 'TEACHER':
         return Response({"error": "Unauthorized"}, status=403)
     
-    # نجلب الأسئلة العامة (التي ليس لها معلم) المرتبطة بهذا المستوى
     questions = Question.objects.filter(level_id=level_id, created_by__isnull=True)
     serializer = QuestionBankSerializer(questions, many=True)
     return Response(serializer.data)
@@ -349,7 +335,6 @@ def get_level_question_bank(request, level_id):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def teacher_create_homework(request):
-    """حفظ الواجب المكون من أسئلة مختارة، مكتوبة، أو مستكملة بالـ AI تلقائياً"""
     if request.user.role != 'TEACHER':
         return Response({"error": "Unauthorized"}, status=403)
 
@@ -366,7 +351,6 @@ def teacher_create_homework(request):
         from levels.models import Level
         original_level = Level.objects.get(id=level_id)
         
-        # 1️⃣ إنشاء مستوى "واجب" جديد مستنسخ من الأصلي ومربوط بالمعلم الحالي
         homework_level = Level.objects.create(
             level_number=original_level.level_number,
             is_homework=True,
@@ -376,7 +360,6 @@ def teacher_create_homework(request):
 
         final_questions_to_add = []
 
-        # 2️⃣ التعامل مع الأسئلة الجاهزة المحددة بالـ IDs ونقلها للواجب الجديد
         if selected_ids:
             ready_questions = Question.objects.filter(id__in=selected_ids)
             for q in ready_questions:
@@ -384,7 +367,6 @@ def teacher_create_homework(request):
                 q.save()
                 final_questions_to_add.append(q)
 
-        # 3️⃣ التعامل مع الأسئلة التي كتبها المعلم يدوياً وحفظها فوراً في الداتابيز
         from questions.models import Skill
         default_skill, _ = Skill.objects.get_or_create(name="Teacher Custom")
 
@@ -404,7 +386,6 @@ def teacher_create_homework(request):
             )
             final_questions_to_add.append(new_custom_q)
 
-        # 4️⃣ صمام أمان الـ AI / النظام لملء النقص تلقائياً حتى 5 أسئلة
         REQUIRED_COUNT = 5
         current_count = len(final_questions_to_add)
         ai_filled_triggered = False
@@ -412,7 +393,6 @@ def teacher_create_homework(request):
         if current_count < REQUIRED_COUNT:
             needed_count = REQUIRED_COUNT - current_count
             
-            # جلب الأسئلة العامة التابعة للمستوى الأصلي والتي لم يتم استخدامها في هذا الواجب
             used_texts = [q.question_text for q in final_questions_to_add]
             backup_pool = Question.objects.filter(level_id=level_id, created_by__isnull=True).exclude(question_text__in=used_texts)
             
@@ -422,7 +402,6 @@ def teacher_create_homework(request):
             else:
                 ai_filled_questions = backup_list
             
-            # استنساخ الأسئلة الإضافية بمستوى الواجب الجديد لحماية بنك الأسئلة الرئيسي
             for bg_q in ai_filled_questions:
                 Question.objects.create(
                     level=homework_level,
