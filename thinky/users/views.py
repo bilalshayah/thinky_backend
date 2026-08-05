@@ -272,7 +272,7 @@ def join_classroom(request):
     if request.user.role != 'STUDENT':
         return Response({"error": "Only students can join classes"}, status=403)
     
-    code = request.data.get("class_code")
+    code = request.data.get("code")
     try:
         classroom = Classroom.objects.get(class_code=code)
         classroom.students.add(request.user)
