@@ -26,6 +26,13 @@ class Level(models.Model):
         blank=True, 
         related_name="created_levels"
     ) # المعلم الذي أنشأ هذا الواجب
+    classroom = models.ForeignKey(
+        'users.Classroom',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="homework_levels"
+    )
     world = models.ForeignKey(GameWorld, on_delete=models.SET_NULL, null=True, blank=True, related_name='levels')
 
 

@@ -75,10 +75,8 @@ class LoginSerializer(serializers.Serializer):
 # --- Serializers المخصصة لهيكلية الواجبات الجديدة ---
 
 class CreateHomeworkSerializer(serializers.Serializer):
-    title = serializers.CharField(max_length=255, required=False, default="واجب جديد")
     level_id = serializers.IntegerField(required=True)
-    deadline = serializers.DateTimeField(required=False, allow_null=True)
-
+    classroom_id = serializers.IntegerField(required=True)  # 🔑 إضافة حقل رقم الصف
 
 class AddSingleQuestionSerializer(serializers.Serializer):
     assignment_id = serializers.IntegerField(required=True)

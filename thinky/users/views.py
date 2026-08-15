@@ -257,6 +257,7 @@ def create_classroom(request):
     
     return Response({
         "message": "Class created successfully",
+        "classroom_id": classroom.id,
         "class_name": classroom.name,
         "class_code": classroom.class_code
     })
@@ -332,15 +333,11 @@ def get_level_question_bank(request, level_id):
 @extend_schema(
     request=CreateHomeworkSerializer,
     responses={201: OpenApiTypes.OBJECT},
-    description="الخطوة 1: تأسيس الواجب ببياناته الأساسية وإرجاع ID الواجب"
+    description="الخطوة 1: تأسيس الواجب ببياناته الأساسية وإرجاع ID الواجب ورقم الصف"
 )
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_homework(request):
-    """
-    POST /api/homeworks/
-    تنشئ الواجب بناءً على مستوى معين وتُرجع ID الخاص به لاستخدامه في الخطوات القادمة.
-    """
     if request.user.role != 'TEACHER':
         return Response({"error": "Unauthorized"}, status=403)
 
@@ -349,23 +346,34 @@ def create_homework(request):
         return Response(serializer.errors, status=400)
 
     level_id = serializer.validated_data["level_id"]
+    classroom_id = request.data.get("classroom_id") # 🔑 استقبال رقم الصف من المعلم
+
+    if not classroom_id:
+        return Response({"error": "classroom_id is required"}, status=400)
 
     try:
         from levels.models import Level
+        from .models import Classroom
+
+        classroom = Classroom.objects.get(id=classroom_id, teacher=request.user)
         original_level = Level.objects.get(id=level_id)
         
         homework_level = Level.objects.create(
             level_number=original_level.level_number,
             is_homework=True,
             teacher=request.user,
+            classroom=classroom, # 👈 الربط المباشر بالصف هنا
             required_score=original_level.required_score
         )
 
         return Response({
-            "message": "Homework created successfully",
-            "assignment_id": homework_level.id
+            "message": "Homework created successfully for this classroom",
+            "assignment_id": homework_level.id,
+            "classroom_id": classroom.id
         }, status=201)
 
+    except Classroom.DoesNotExist:
+        return Response({"error": "Classroom not found or unauthorized"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=400)
 
@@ -401,6 +409,10 @@ def get_level_question_bank(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def add_homework_question(request):
+    """
+    POST /api/homework-questions/
+    تضيف سؤالاً مخصصاً جديداً أو تبنيه وتربطه بالـ assignment_id الممرر.
+    """
     if request.user.role != 'TEACHER':
         return Response({"error": "Unauthorized"}, status=403)
 
@@ -416,8 +428,7 @@ def add_homework_question(request):
         homework_level = Level.objects.get(id=assignment_id, is_homework=True, teacher=request.user)
 
         from questions.models import Skill
-        skill_name = data.get('skill_name', 'General')
-        skill_obj, _ = Skill.objects.get_or_create(name=skill_name)
+        default_skill, _ = Skill.objects.get_or_create(name="Teacher Custom")
 
         question = Question.objects.create(
             level=homework_level,
@@ -428,24 +439,51 @@ def add_homework_question(request):
             option_d=data['option_d'],
             correct_answer=data['correct_answer'].upper(),
             hint=data.get('hint', ''),
-            skill=skill_obj,
+            skill=default_skill,
             difficulty="MEDIUM",
             created_by=request.user
         )
 
-        # حساب إجمالي الأسئلة المضافة حالياً
-        total_questions = Question.objects.filter(level=homework_level, created_by=request.user).count()
-
         return Response({
-            "message": "Question added successfully",
+            "message": "Question added to homework successfully",
             "question_id": question.id,
-            "assignment_id": homework_level.id,
-            "total_questions_count": total_questions,
-            "is_minimum_reached": total_questions >= 5,
-            "notice": "Minimum 5 questions required" if total_questions < 5 else "Minimum quota met"
+            "assignment_id": homework_level.id
         }, status=201)
 
     except Level.DoesNotExist:
         return Response({"error": "Assignment not found or unauthorized"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=400)
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_student_classroom_homeworks(request, classroom_id):
+    """
+    GET /api/users/classrooms/<classroom_id>/homeworks/
+    تسمح للطفل بعرض كافة الواجبات الخاصة بالصف الذي انضم إليه عبر كود الصف.
+    """
+    if request.user.role != 'STUDENT':
+        return Response({"error": "Only students can view homeworks"}, status=403)
+
+    try:
+        classroom = Classroom.objects.get(id=classroom_id, students=request.user)
+        
+        from levels.models import Level
+        # جلب المستويات الخاصة بهذا الصف والمحددة كواجبات
+        homeworks = Level.objects.filter(classroom=classroom, is_homework=True)
+
+        data = []
+        for hw in homeworks:
+            data.append({
+                "homework_id": hw.id, # 🔑 هذا الـ ID يُمرر بدلاً من level_id عند بدء الجلسة
+                "level_number": hw.level_number,
+                "teacher_name": hw.teacher.username if hw.teacher else "Teacher",
+                "total_questions": hw.question_set.count() # 👈 التعديل لتجنب AttributeError
+            })
+
+        return Response(data, status=200)
+
+    except Classroom.DoesNotExist:
+        return Response({"error": "You are not enrolled in this classroom"}, status=404)
