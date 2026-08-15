@@ -124,17 +124,17 @@ def get_mission_questions(request, session_id):
         # 1. استخراج الميزات الأساسية للمظهر السلوكي
         features, weak_skill, common_mistake = extract_behavior_features(attempts_list)
         
-        # 2. استدعاء محرك الـ AI لاتخاذ القرار وتعيين مجموعة من المجموعات الـ 5[cite: 6]
+        # 2. استدعاء محرك الـ AI لاتخاذ القرار وتعيين مجموعة من المجموعات الـ 5
         engine = AIDecisionEngine()
         decision = engine.get_decision(features, weak_skill, common_mistake, request.user, wrong_details)
         
         allowed_difficulties = decision.get("suggested_difficulties", ["EASY", "MEDIUM"])
         
-        # 3. مهمة الباك إند الصافية: تمرير البرومبت الجاهز واستقبال النص النهائي من خادم الـ AI[cite: 6]
+        # 3. مهمة الباك إند الصافية: تمرير البرومبت الجاهز واستقبال النص النهائي من خادم الـ AI
         ready_prompt = decision.get("gemini_prompt", "شجع الطالب بأسلوب مبسط")
         final_msg = engine.get_ai_response(ready_prompt)
 
-        # 4. تحديد طبيعة حركة الشخصيات داخل طور التدريب بناءً على التصنيف المستلم[cite: 6]
+        # 4. تحديد طبيعة حركة الشخصيات داخل طور التدريب بناءً على التصنيف المستلم
         character_type = "none"
         if session.phase == "training":
             if decision.get("group") == "MASTER":
@@ -150,31 +150,55 @@ def get_mission_questions(request, session_id):
             "character_type": character_type  
         }
 
+    # === الجزء المصلح لاختيار الأسئلة وتكملة الـ AI عند انتهاء أسئلة المعلم ===
+    
     answered_ids = AnswerAttempt.objects.filter(session=session).values_list('question_id', flat=True)
     level = session.levelid
     is_homework = getattr(level, 'is_homework', False)
     teacher = getattr(level, 'teacher', None)
 
-    if is_homework and teacher:
-        initial_qs = Question.objects.filter(level=level, created_by=teacher).exclude(id__in=answered_ids)
-    else:
-        initial_qs = Question.objects.filter(level=level, created_by__isnull=True).exclude(id__in=answered_ids)
-
-    base_qs = initial_qs.filter(difficulty__in=allowed_difficulties)
-    if not base_qs.exists():
-        base_qs = initial_qs
-
-    # سحب الأسئلة لطور التدريب بحيث تركز 3 منها بالكامل على مهارة الطفل الضعيفة المكتشفة
-    if session.phase == "training":
-        final_list = list(base_qs.filter(skill__name__iexact=weak_skill)[:3])
-        needed = 5 - len(final_list)
-        final_list += list(base_qs.exclude(id__in=[q.id for q in final_list])[:needed])
-    else:
-        # طور الاستكشاف الأولي (analysis) يسحب 5 أسئلة منوعة وجديدة
-        final_list = list(base_qs.order_by('?')[:5])
+    # 1. أسئلة المعلم المتبقية في الواجب والتي لم يُجب عليها الطالب بعد
+    teacher_qs = Question.objects.filter(level=level, created_by=teacher).exclude(id__in=answered_ids) if (is_homework and teacher) else Question.objects.none()
     
+    # 2. بنك أسئلة النظام العام غير المجاب عليها (نتحقق من نفس المستوى أولاً، وإذا كان الواجب مخصصاً جلبنا أسئلة بنك النظام العامة)
+    system_qs = Question.objects.filter(created_by__isnull=True).exclude(id__in=answered_ids)
+    level_system_qs = system_qs.filter(level=level)
+    if not level_system_qs.exists():
+        level_system_qs = system_qs
+
+    if session.phase == "analysis":
+        # عرض أسئلة المعلم أولاً
+        final_list = list(teacher_qs[:5])
+        
+        # إذا كانت أسئلة المعلم أقل من 5، يكمل النظام من أسئلة البنك العام
+        if len(final_list) < 5:
+            needed = 5 - len(final_list)
+            used_ids = [q.id for q in final_list]
+            additional_qs = list(level_system_qs.exclude(id__in=used_ids).order_by('?')[:needed])
+            final_list.extend(additional_qs)
+
+    else: # phase == "training"
+        used_ids = list(answered_ids)
+
+        # أخذ الأسئلة المرتبطة بالمهارة الضعيفة (من أسئلة المعلم إن وُجدت، ثم من النظام العام)
+        focused_teacher_qs = list(teacher_qs.filter(skill__name__iexact=weak_skill)[:3])
+        used_ids.extend([q.id for q in focused_teacher_qs])
+
+        needed_focused = 3 - len(focused_teacher_qs)
+        focused_system_qs = list(level_system_qs.filter(skill__name__iexact=weak_skill).exclude(id__in=used_ids)[:needed_focused])
+        
+        final_list = focused_teacher_qs + focused_system_qs
+        used_ids.extend([q.id for q in focused_system_qs])
+
+        # تكملة المتبقي ليصل إلى 5 أسئلة من بنك النظام العام
+        if len(final_list) < 5:
+            needed = 5 - len(final_list)
+            remaining_qs = list(level_system_qs.exclude(id__in=used_ids).order_by('?')[:needed])
+            final_list.extend(remaining_qs)
+
+    # احترازي أخير: في حال نفاد كافة الأسئلة غير المجاب عليها نهائياً
     if not final_list:
-        final_list = list(Question.objects.filter(level=level)[:5])
+        final_list = list(Question.objects.exclude(id__in=answered_ids)[:5])
     
     return Response({
         "current_phase": session.phase,

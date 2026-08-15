@@ -14,7 +14,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Classroom, User
-from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
+from .serializers import LoginSerializer, RegisterSerializer, UserSerializer, CreateHomeworkSerializer, AddSingleQuestionSerializer
 
 
 # --- Serializers ---
@@ -327,25 +327,28 @@ def get_level_question_bank(request, level_id):
     return Response(serializer.data)
 
 
+# --- APIs الواجبات المقسمة بحسب منطق UX المنفصل ---
+
 @extend_schema(
-    request=CompleteHomeworkSerializer,
-    responses={200: OpenApiTypes.OBJECT},
-    description="إنشاء واجب مخصص: يجمع بين الأسئلة المختارة والمكتوبة يدوياً، مع إكمال النقص تلقائياً بالـ AI إلى 5 أسئلة"
+    request=CreateHomeworkSerializer,
+    responses={201: OpenApiTypes.OBJECT},
+    description="الخطوة 1: تأسيس الواجب ببياناته الأساسية وإرجاع ID الواجب"
 )
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def teacher_create_homework(request):
+def create_homework(request):
+    """
+    POST /api/homeworks/
+    تنشئ الواجب بناءً على مستوى معين وتُرجع ID الخاص به لاستخدامه في الخطوات القادمة.
+    """
     if request.user.role != 'TEACHER':
         return Response({"error": "Unauthorized"}, status=403)
 
-    serializer = CompleteHomeworkSerializer(data=request.data)
+    serializer = CreateHomeworkSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=400)
 
-    validated_data = serializer.validated_data
-    level_id = validated_data["level_id"]
-    selected_ids = validated_data["question_ids"]
-    custom_questions_data = validated_data["custom_questions"]
+    level_id = serializer.validated_data["level_id"]
 
     try:
         from levels.models import Level
@@ -358,71 +361,91 @@ def teacher_create_homework(request):
             required_score=original_level.required_score
         )
 
-        final_questions_to_add = []
+        return Response({
+            "message": "Homework created successfully",
+            "assignment_id": homework_level.id
+        }, status=201)
 
-        if selected_ids:
-            ready_questions = Question.objects.filter(id__in=selected_ids)
-            for q in ready_questions:
-                q.level = homework_level
-                q.save()
-                final_questions_to_add.append(q)
+    except Exception as e:
+        return Response({"error": str(e)}, status=400)
+
+
+@extend_schema(
+    responses={200: QuestionBankSerializer(many=True)},
+    description="الخطوة 2: جلب بنك الأسئلة الخاص بمستوى معين"
+)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_level_question_bank(request):
+    """
+    GET /api/question-bank/?level_id=X
+    تتيح للمعلم تصفح وجلب بنك الأسئلة المتاحة لمستوى معين ممرر في الـ Query Parameters.
+    """
+    if request.user.role != 'TEACHER':
+        return Response({"error": "Unauthorized"}, status=403)
+
+    level_id = request.query_params.get('level_id')
+    if not level_id:
+        return Response({"error": "level_id parameter is required"}, status=400)
+
+    questions = Question.objects.filter(level_id=level_id, created_by__isnull=True)
+    serializer = QuestionBankSerializer(questions, many=True)
+    return Response(serializer.data)
+
+
+@extend_schema(
+    request=AddSingleQuestionSerializer,
+    responses={201: OpenApiTypes.OBJECT},
+    description="الخطوة 3: إضافة سؤال يدوي أو اختيار سؤال من البنك وربطه بالواجب"
+)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def add_homework_question(request):
+    if request.user.role != 'TEACHER':
+        return Response({"error": "Unauthorized"}, status=403)
+
+    serializer = AddSingleQuestionSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=400)
+
+    data = serializer.validated_data
+    assignment_id = data["assignment_id"]
+
+    try:
+        from levels.models import Level
+        homework_level = Level.objects.get(id=assignment_id, is_homework=True, teacher=request.user)
 
         from questions.models import Skill
-        default_skill, _ = Skill.objects.get_or_create(name="Teacher Custom")
+        skill_name = data.get('skill_name', 'General')
+        skill_obj, _ = Skill.objects.get_or_create(name=skill_name)
 
-        for q_data in custom_questions_data:
-            new_custom_q = Question.objects.create(
-                level=homework_level,
-                question_text=q_data['question_text'],
-                option_a=q_data['option_a'],
-                option_b=q_data['option_b'],
-                option_c=q_data['option_c'],
-                option_d=q_data['option_d'],
-                correct_answer=q_data['correct_answer'].upper(),
-                hint=q_data.get('hint', ''),
-                skill=default_skill,
-                difficulty="MEDIUM",
-                created_by=request.user
-            )
-            final_questions_to_add.append(new_custom_q)
+        question = Question.objects.create(
+            level=homework_level,
+            question_text=data['question_text'],
+            option_a=data['option_a'],
+            option_b=data['option_b'],
+            option_c=data['option_c'],
+            option_d=data['option_d'],
+            correct_answer=data['correct_answer'].upper(),
+            hint=data.get('hint', ''),
+            skill=skill_obj,
+            difficulty="MEDIUM",
+            created_by=request.user
+        )
 
-        REQUIRED_COUNT = 5
-        current_count = len(final_questions_to_add)
-        ai_filled_triggered = False
-
-        if current_count < REQUIRED_COUNT:
-            needed_count = REQUIRED_COUNT - current_count
-            
-            used_texts = [q.question_text for q in final_questions_to_add]
-            backup_pool = Question.objects.filter(level_id=level_id, created_by__isnull=True).exclude(question_text__in=used_texts)
-            
-            backup_list = list(backup_pool)
-            if len(backup_list) >= needed_count:
-                ai_filled_questions = random.sample(backup_list, needed_count)
-            else:
-                ai_filled_questions = backup_list
-            
-            for bg_q in ai_filled_questions:
-                Question.objects.create(
-                    level=homework_level,
-                    question_text=bg_q.question_text,
-                    option_a=bg_q.option_a,
-                    option_b=bg_q.option_b,
-                    option_c=bg_q.option_c,
-                    option_d=bg_q.option_d,
-                    correct_answer=bg_q.correct_answer,
-                    hint=bg_q.hint,
-                    skill=bg_q.skill,
-                    difficulty=bg_q.difficulty
-                )
-            ai_filled_triggered = True
+        # حساب إجمالي الأسئلة المضافة حالياً
+        total_questions = Question.objects.filter(level=homework_level, created_by=request.user).count()
 
         return Response({
-            "message": "Homework created successfully with all combined rules!",
-            "homework_level_id": homework_level.id,
-            "ai_auto_fill_triggered": ai_filled_triggered,
-            "total_questions_secured": Question.objects.filter(level=homework_level).count()
-        }, status=200)
+            "message": "Question added successfully",
+            "question_id": question.id,
+            "assignment_id": homework_level.id,
+            "total_questions_count": total_questions,
+            "is_minimum_reached": total_questions >= 5,
+            "notice": "Minimum 5 questions required" if total_questions < 5 else "Minimum quota met"
+        }, status=201)
 
+    except Level.DoesNotExist:
+        return Response({"error": "Assignment not found or unauthorized"}, status=404)
     except Exception as e:
         return Response({"error": str(e)}, status=400)

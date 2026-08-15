@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import register , login , UserListCreateView,UserDetailView, user_profile , get_user_library , create_classroom , parent_dashboard , teacher_dashboard , add_child , join_classroom , get_level_question_bank ,teacher_create_homework
+from .views import register , login , UserListCreateView,UserDetailView, user_profile , get_user_library , create_classroom , parent_dashboard , teacher_dashboard , add_child , join_classroom , get_level_question_bank ,create_homework,add_homework_question
 
 urlpatterns = [
     path("register/", register),
@@ -14,5 +14,7 @@ urlpatterns = [
     path("join/",join_classroom),
     path("add_chiled/",add_child),
     path("questions-bank/<int:level_id>",get_level_question_bank),
-    path("creating-homework/",teacher_create_homework),
+    path('api/homeworks/', create_homework, name='create_homework'),
+    path('api/question-bank/', get_level_question_bank, name='get_question_bank'),
+    path('api/homework-questions/', add_homework_question, name='add_homework_question'),
 ]

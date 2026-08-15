@@ -71,3 +71,22 @@ class LoginSerializer(serializers.Serializer):
             "refresh": str(refresh),
             "access": str(refresh.access_token)
         }
+
+# --- Serializers المخصصة لهيكلية الواجبات الجديدة ---
+
+class CreateHomeworkSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=255, required=False, default="واجب جديد")
+    level_id = serializers.IntegerField(required=True)
+    deadline = serializers.DateTimeField(required=False, allow_null=True)
+
+
+class AddSingleQuestionSerializer(serializers.Serializer):
+    assignment_id = serializers.IntegerField(required=True)
+    question_text = serializers.CharField(required=True)
+    option_a = serializers.CharField(required=True)
+    option_b = serializers.CharField(required=True)
+    option_c = serializers.CharField(required=True)
+    option_d = serializers.CharField(required=True)
+    correct_answer = serializers.CharField(max_length=1)
+    hint = serializers.CharField(required=False, allow_blank=True, default="")
+    skill_name = serializers.CharField(required=False, default="General") # إتاحة اختيار المهارة
