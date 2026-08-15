@@ -24,11 +24,11 @@ class AIDecisionEngine:
             self.ai_groups = ["MASTER", "RECKLESS", "HESITANT", "DEPENDENT", "STRUGGLER"]
 
     def get_decision(self, avg_features, weak_skill, common_mistake, user, wrong_details=None):
-        # 1. حساب المسافة الإقليدية مباشرة وبشكل نقي[cite: 1]
+        # 1. حساب المسافة الإقليدية مباشرة وبشكل نقي
         distances = {g: np.linalg.norm(avg_features - c) for g, c in self.centroids.items()}
         group = min(distances, key=distances.get)
 
-        # 🚨 قاعدة ضبط تصنيف الاعتمادية (Dependent Override)[cite: 1]
+        # 🚨 قاعدة ضبط تصنيف الاعتمادية (Dependent Override)
         if wrong_details:
             hints_count = sum([1 for d in wrong_details if d.get('hints_used')])
             if hints_count >= 2 or avg_features[2] <= 0.4:
@@ -65,7 +65,22 @@ class AIDecisionEngine:
     )
         }
 
-        gemini_prompt = f"""
+        # 🌟 التمييز بين الطالب الممتاز (MASTER) وبقية الطلاب
+        if group == "MASTER":
+            gemini_prompt = f"""
+أنت الشرير المرح الذكي بلعبة الرياضيات. خاطب الطفل العبقري ({user.username}) بعمر 10 سنوات بلهجة سورية عامية بيضاء ومبسطة، والتزم بجنس الطفل: {gender_syntax}.
+
+📌 وضع الطفل:
+- الطفل أجاب على جميع الأسئلة الـ 5 الأولى بشكل صحيح تماماً 100% ولا يوجد لديه أي خطأ!
+
+⚠️ شروط الصياغة الصارمة للشرير (نص متصل وقصير جداً من 1 إلى 2 جملة فقط):
+1. ممنوع تماماً ذكر أي أخطاء أو شرح أي مسائل أو إعطاء نصائح تعليمية للطفل، فهو لم يخطئ أصلاً!
+2. أظهر تفاجئك الدرامي أو شكك اللطيف بذكائه (مثلاً: "مستحيل! كيف حليت كل شي صح؟ صدفة محض!").
+3. اتحداه بأسلوب ممتع ومستفز بأن الجولة القادمة (الـ 5 أسئلة التالية) ستكون أشد صعوبة ولن يتمكن من حلها بسهولة.
+4. التزم بـ {gender_syntax} واستخدم إيموجي حماسي 😈⚡.
+"""
+        else:
+            gemini_prompt = f"""
 أنت المساعد الذكي 'Thinky' بلعبة الرياضيات. خاطب الطفل ({user.username}) بعمر 10 سنوات بلهجة سورية عامية بيضاء ومبسطة، والتزم بجنس الطفل: {gender_syntax}.
 
 📌 السياق السلوكي للطفل (أعطه نصيحة سريعة ومباشرة جداً لتعديل سلوكه بدون مبالغة بالكلام العاطفي وبدون كلمات زائدة):

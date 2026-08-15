@@ -16,8 +16,6 @@ class AnswerAttempt(models.Model):
 
     is_correct = models.BooleanField()
 
-    #attempt_number = models.IntegerField()
-
     time_taken = models.FloatField()
 
     hints_used = models.BooleanField(default=False)
