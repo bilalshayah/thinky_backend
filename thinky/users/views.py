@@ -1,23 +1,31 @@
 import random
 import string
-from datetime import date, timedelta
+from datetime import date
 
-from drf_spectacular.utils import OpenApiTypes, extend_schema
-from game_sessions.models import GameSession
-from levels.models import UserUnlockedCard
-from questions.models import Question
-from questions.serializers import QuestionBankSerializer
 from rest_framework import serializers, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from drf_spectacular.utils import OpenApiTypes, extend_schema
 
 from .models import Classroom, User
-from .serializers import LoginSerializer, RegisterSerializer, UserSerializer, CreateHomeworkSerializer, AddSingleQuestionSerializer
+from .serializers import (
+    LoginSerializer, 
+    RegisterSerializer, 
+    UserSerializer, 
+    CreateHomeworkSerializer, 
+    AddSingleQuestionSerializer
+)
+
+# استيرادات من تطبيقات أخرى داخل المشروع
+from game_sessions.models import GameSession
+from levels.models import Level, UserUnlockedCard
+from questions.models import Question, Skill
+from questions.serializers import QuestionBankSerializer
 
 
-# --- Serializers ---
+# --- Serializers المساعدة لـ Swagger ---
 class UserProfileResponseSerializer(serializers.Serializer):
     username = serializers.CharField()
     age = serializers.IntegerField()
@@ -26,33 +34,11 @@ class UserProfileResponseSerializer(serializers.Serializer):
     gender_display = serializers.CharField()
     streak_count = serializers.IntegerField()
 
-
 class ClassSerializer(serializers.Serializer):
     name = serializers.CharField()
 
-
 class JoinClassSerializer(serializers.Serializer):
     code = serializers.CharField()
-
-
-class CustomTeacherQuestionSerializer(serializers.Serializer):
-    question_text = serializers.CharField(required=True)
-    option_a = serializers.CharField(required=True)
-    option_b = serializers.CharField(required=True)
-    option_c = serializers.CharField(required=True)
-    option_d = serializers.CharField(required=True)
-    correct_answer = serializers.CharField(max_length=1)
-    hint = serializers.CharField(required=False, allow_blank=True, default="")
-
-
-class CompleteHomeworkSerializer(serializers.Serializer):
-    level_id = serializers.IntegerField(required=True)
-    question_ids = serializers.ListField(
-        child=serializers.IntegerField(), required=False, default=list,
-        help_text="قائمة بـ IDs الأسئلة المختارة"
-    )
-    custom_questions = CustomTeacherQuestionSerializer(many=True, required=False, default=list)
-
 
 class AddChildInputSerializer(serializers.Serializer):
     child_username = serializers.CharField(help_text="اسم المستخدم الخاص بالطفل")
@@ -64,7 +50,7 @@ class AddChildInputSerializer(serializers.Serializer):
 @extend_schema(
     request=RegisterSerializer,
     responses={201: OpenApiTypes.OBJECT},
-    description="إنشاء حساب مستخدم جديد مع تحديد الجنس (M/F)"
+    description="إنشاء حساب مستخدم جديد"
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -72,11 +58,8 @@ def register(request):
     serializer = RegisterSerializer(data=request.data)
     if serializer.is_valid():
         serializer.save()
-        return Response(
-            {"message": "User created successfully"},
-            status=status.HTTP_201_CREATED
-        )
-    return Response(serializer.errors, status=400)
+        return Response({"message": "User created successfully"}, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 @extend_schema(
@@ -99,7 +82,7 @@ def login(request):
             "refresh": refresh,
             "user": user_data
         })
-    return Response(serializer.errors, status=400)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class UserListCreateView(ListCreateAPIView):
@@ -114,7 +97,7 @@ class UserDetailView(RetrieveUpdateDestroyAPIView):
 
 @extend_schema(
     responses={200: UserProfileResponseSerializer},
-    description="جلب بيانات الملف الشخصي للمستخدم وحساب عمره وجنسه وإعادة ضبط الستريك إذا انقطع"
+    description="جلب بيانات الملف الشخصي للمستخدم"
 )
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -123,7 +106,6 @@ def user_profile(request):
     today = date.today()
     age = None
 
-    # 🌟 Duolingo Streak Reset: Reset to 0 if user missed more than 1 day
     if user.last_activity_date:
         days_passed = (today - user.last_activity_date).days
         if days_passed > 1:
@@ -132,9 +114,7 @@ def user_profile(request):
 
     if user.birthday:
         birthday = user.birthday
-        age = today.year - birthday.year - (
-            (today.month, today.day) < (birthday.month, birthday.day)
-        )
+        age = today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
 
     data = {
         "username": user.username,
@@ -152,29 +132,25 @@ def user_profile(request):
 @permission_classes([IsAuthenticated])
 def get_user_library(request):
     unlocked_entries = UserUnlockedCard.objects.filter(user=request.user).select_related('card')
-    
-    cards_data = []
-    for entry in unlocked_entries:
-        cards_data.append({
+    cards_data = [
+        {
             "planet_name": entry.card.planet_name,
             "unlocked_at": entry.unlocked_at.strftime("%Y-%m-%d")
-        })
-    
-    return Response({
-        "total_cards": len(cards_data),
-        "library": cards_data
-    })
+        }
+        for entry in unlocked_entries
+    ]
+    return Response({"total_cards": len(cards_data), "library": cards_data})
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def teacher_dashboard(request):
     if request.user.role != 'TEACHER':
-        return Response({"error": "Unauthorized"}, status=403)
+        return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
     classrooms = Classroom.objects.filter(teacher=request.user)
-    
     results = []
+    
     for classroom in classrooms:
         student_ids = classroom.students.values_list('id', flat=True)
         all_sessions = GameSession.objects.filter(user_id__in=student_ids, is_active=False).select_related('user', 'levelid')
@@ -201,59 +177,50 @@ def teacher_dashboard(request):
 
 @extend_schema(
     responses={200: OpenApiTypes.OBJECT},
-    description="جلب تقارير أداء الطلاب في الفصل الخاص بالمعلم"
+    description="جلب تقارير أداء الأطفال المرتبطين بحساب الوالد"
 )
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def parent_dashboard(request):
     if request.user.role != 'PARENT':
-        return Response({"error": "Unauthorized"}, status=403)
+        return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
     children = request.user.parent_of.all()
-    
     children_stats = []
+    
     for child in children:
         sessions = GameSession.objects.filter(user=child, is_active=False).select_related('levelid').order_by('-id')
-        
-        level_history = []
-        for s in sessions:
-            level_history.append({
+        level_history = [
+            {
                 "level_number": s.levelid.level_number,
                 "score": f"{s.score}%",
-            })
+            }
+            for s in sessions
+        ]
 
         children_stats.append({
             "name": child.username,
             "total_points": child.total_points,
             "streak": child.streak_count,
-            "level_performance": level_history,
-            #"date": s.created_at.strftime("%Y-%m-%d")
+            "level_performance": level_history
         })
 
     return Response(children_stats)
 
 
-@extend_schema(
-    request=ClassSerializer,
-    responses={200: OpenApiTypes.OBJECT},
-)
+@extend_schema(request=ClassSerializer, responses={200: OpenApiTypes.OBJECT})
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_classroom(request):
     if request.user.role != 'TEACHER':
-        return Response({"error": "Only teachers can create classes"}, status=403)
+        return Response({"error": "Only teachers can create classes"}, status=status.HTTP_403_FORBIDDEN)
     
     name = request.data.get("name")
     if not name:
-        return Response({"error": "Class name is required"}, status=400)
+        return Response({"error": "Class name is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    
-    classroom = Classroom.objects.create(
-        name=name,
-        teacher=request.user,
-        class_code=code
-    )
+    classroom = Classroom.objects.create(name=name, teacher=request.user, class_code=code)
     
     return Response({
         "message": "Class created successfully",
@@ -263,15 +230,12 @@ def create_classroom(request):
     })
 
 
-@extend_schema(
-    request=JoinClassSerializer,
-    responses={200: OpenApiTypes.OBJECT},
-)
+@extend_schema(request=JoinClassSerializer, responses={200: OpenApiTypes.OBJECT})
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def join_classroom(request):
     if request.user.role != 'STUDENT':
-        return Response({"error": "Only students can join classes"}, status=403)
+        return Response({"error": "Only students can join classes"}, status=status.HTTP_403_FORBIDDEN)
     
     code = request.data.get("code")
     try:
@@ -279,82 +243,73 @@ def join_classroom(request):
         classroom.students.add(request.user)
         return Response({"message": f"Successfully joined {classroom.name}"})
     except Classroom.DoesNotExist:
-        return Response({"error": "Invalid class code"}, status=404)
+        return Response({"error": "Invalid class code"}, status=status.HTTP_404_NOT_FOUND)
 
 
-@extend_schema(
-    request=AddChildInputSerializer,
-    responses={200: OpenApiTypes.OBJECT},
-    description="ربط الوالد بطفله بأمان عبر اسم المستخدم وكلمة المرور الخاصة بالطفل"
-)
+@extend_schema(request=AddChildInputSerializer, responses={200: OpenApiTypes.OBJECT})
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def add_child(request):
     if request.user.role != 'PARENT':
-        return Response({"error": "Only parents can add children"}, status=403)
+        return Response({"error": "Only parents can add children"}, status=status.HTTP_403_FORBIDDEN)
     
     serializer = AddChildInputSerializer(data=request.data)
     if not serializer.is_valid():
-        return Response(serializer.errors, status=400)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
     child_username = serializer.validated_data.get("child_username")
     child_password = serializer.validated_data.get("child_password")
     
     try:
         child = User.objects.get(username=child_username, role='STUDENT')
-        
         if not child.check_password(child_password):
-            return Response({"error": "كلمة المرور الخاصة بالطفل غير صحيحة!"}, status=401)
+            return Response({"error": "كلمة المرور الخاصة بالطفل غير صحيحة!"}, status=status.HTTP_401_UNAUTHORIZED)
             
         request.user.parent_of.add(child) 
-        
         return Response({"message": f"Successfully linked with child {child_username}"})
     except User.DoesNotExist:
-        return Response({"error": "Child not found"}, status=404)
+        return Response({"error": "Child not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
+# 🌟 دالة جلب بنك الأسئلة الموحدة (تدعم كلاً من Path parameter و Query parameter)
 @extend_schema(
     responses={200: QuestionBankSerializer(many=True)},
-    description="عرض قائمة الأسئلة المتاحة في المستوى ليختار منها المعلم"
+    description="جلب كافة تفاصيل الأسئلة المتاحة لمستوى معين معلم لتمكينه من اختيار الأسئلة"
 )
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def get_level_question_bank(request, level_id):
+def get_level_question_bank(request, level_id=None):
     if request.user.role != 'TEACHER':
-        return Response({"error": "Unauthorized"}, status=403)
+        return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
     
-    questions = Question.objects.filter(level_id=level_id, created_by__isnull=True)
+    target_level_id = level_id or request.query_params.get('level_id')
+    if not target_level_id:
+        return Response({"error": "level_id parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    questions = Question.objects.filter(level_id=target_level_id, created_by__isnull=True)
     serializer = QuestionBankSerializer(questions, many=True)
-    return Response(serializer.data)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
-
-# --- APIs الواجبات المقسمة بحسب منطق UX المنفصل ---
 
 @extend_schema(
     request=CreateHomeworkSerializer,
     responses={201: OpenApiTypes.OBJECT},
-    description="الخطوة 1: تأسيس الواجب ببياناته الأساسية وإرجاع ID الواجب ورقم الصف"
+    description="تأسيس الواجب ببياناته الأساسية وإرجاع ID الواجب ورقم الصف"
 )
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_homework(request):
     if request.user.role != 'TEACHER':
-        return Response({"error": "Unauthorized"}, status=403)
+        return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
     serializer = CreateHomeworkSerializer(data=request.data)
     if not serializer.is_valid():
-        return Response(serializer.errors, status=400)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     level_id = serializer.validated_data["level_id"]
-    classroom_id = request.data.get("classroom_id") # 🔑 استقبال رقم الصف من المعلم
-
-    if not classroom_id:
-        return Response({"error": "classroom_id is required"}, status=400)
+    classroom_id = serializer.validated_data["classroom_id"]
 
     try:
-        from levels.models import Level
-        from .models import Classroom
-
         classroom = Classroom.objects.get(id=classroom_id, teacher=request.user)
         original_level = Level.objects.get(id=level_id)
         
@@ -362,7 +317,7 @@ def create_homework(request):
             level_number=original_level.level_number,
             is_homework=True,
             teacher=request.user,
-            classroom=classroom, # 👈 الربط المباشر بالصف هنا
+            classroom=classroom,
             required_score=original_level.required_score
         )
 
@@ -370,65 +325,36 @@ def create_homework(request):
             "message": "Homework created successfully for this classroom",
             "assignment_id": homework_level.id,
             "classroom_id": classroom.id
-        }, status=201)
+        }, status=status.HTTP_201_CREATED)
 
     except Classroom.DoesNotExist:
-        return Response({"error": "Classroom not found or unauthorized"}, status=404)
-    except Exception as e:
-        return Response({"error": str(e)}, status=400)
-
-
-@extend_schema(
-    responses={200: QuestionBankSerializer(many=True)},
-    description="الخطوة 2: جلب بنك الأسئلة الخاص بمستوى معين"
-)
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_level_question_bank(request):
-    """
-    GET /api/question-bank/?level_id=X
-    تتيح للمعلم تصفح وجلب بنك الأسئلة المتاحة لمستوى معين ممرر في الـ Query Parameters.
-    """
-    if request.user.role != 'TEACHER':
-        return Response({"error": "Unauthorized"}, status=403)
-
-    level_id = request.query_params.get('level_id')
-    if not level_id:
-        return Response({"error": "level_id parameter is required"}, status=400)
-
-    questions = Question.objects.filter(level_id=level_id, created_by__isnull=True)
-    serializer = QuestionBankSerializer(questions, many=True)
-    return Response(serializer.data)
+        return Response({"error": "Classroom not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+    except Level.DoesNotExist:
+        return Response({"error": "Original level not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 @extend_schema(
     request=AddSingleQuestionSerializer,
     responses={201: OpenApiTypes.OBJECT},
-    description="الخطوة 3: إضافة سؤال يدوي أو اختيار سؤال من البنك وربطه بالواجب"
+    description="إضافة سؤال مخصص أو اختيار سؤال من البنك وربطه بالواجب"
 )
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def add_homework_question(request):
-    """
-    POST /api/homework-questions/
-    تضيف سؤالاً مخصصاً جديداً أو تبنيه وتربطه بالـ assignment_id الممرر.
-    """
     if request.user.role != 'TEACHER':
-        return Response({"error": "Unauthorized"}, status=403)
+        return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
     serializer = AddSingleQuestionSerializer(data=request.data)
     if not serializer.is_valid():
-        return Response(serializer.errors, status=400)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     data = serializer.validated_data
     assignment_id = data["assignment_id"]
 
     try:
-        from levels.models import Level
         homework_level = Level.objects.get(id=assignment_id, is_homework=True, teacher=request.user)
-
-        from questions.models import Skill
-        default_skill, _ = Skill.objects.get_or_create(name="Teacher Custom")
+        skill_name = data.get("skill_name", "General")
+        default_skill, _ = Skill.objects.get_or_create(name=skill_name)
 
         question = Question.objects.create(
             level=homework_level,
@@ -448,42 +374,33 @@ def add_homework_question(request):
             "message": "Question added to homework successfully",
             "question_id": question.id,
             "assignment_id": homework_level.id
-        }, status=201)
+        }, status=status.HTTP_201_CREATED)
 
     except Level.DoesNotExist:
-        return Response({"error": "Assignment not found or unauthorized"}, status=404)
-    except Exception as e:
-        return Response({"error": str(e)}, status=400)
-
+        return Response({"error": "Assignment not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_student_classroom_homeworks(request, classroom_id):
-    """
-    GET /api/users/classrooms/<classroom_id>/homeworks/
-    تسمح للطفل بعرض كافة الواجبات الخاصة بالصف الذي انضم إليه عبر كود الصف.
-    """
     if request.user.role != 'STUDENT':
-        return Response({"error": "Only students can view homeworks"}, status=403)
+        return Response({"error": "Only students can view homeworks"}, status=status.HTTP_403_FORBIDDEN)
 
     try:
         classroom = Classroom.objects.get(id=classroom_id, students=request.user)
-        
-        from levels.models import Level
-        # جلب المستويات الخاصة بهذا الصف والمحددة كواجبات
         homeworks = Level.objects.filter(classroom=classroom, is_homework=True)
 
-        data = []
-        for hw in homeworks:
-            data.append({
-                "homework_id": hw.id, # 🔑 هذا الـ ID يُمرر بدلاً من level_id عند بدء الجلسة
+        data = [
+            {
+                "homework_id": hw.id,
                 "level_number": hw.level_number,
                 "teacher_name": hw.teacher.username if hw.teacher else "Teacher",
-                "total_questions": hw.question_set.count() # 👈 التعديل لتجنب AttributeError
-            })
+                "total_questions": hw.question_set.count()
+            }
+            for hw in homeworks
+        ]
 
-        return Response(data, status=200)
+        return Response(data, status=status.HTTP_200_OK)
 
     except Classroom.DoesNotExist:
-        return Response({"error": "You are not enrolled in this classroom"}, status=404)
+        return Response({"error": "You are not enrolled in this classroom"}, status=status.HTTP_404_NOT_FOUND)
