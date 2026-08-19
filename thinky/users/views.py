@@ -230,6 +230,7 @@ def create_classroom(request):
     })
 
 
+
 @extend_schema(request=JoinClassSerializer, responses={200: OpenApiTypes.OBJECT})
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -241,7 +242,7 @@ def join_classroom(request):
     try:
         classroom = Classroom.objects.get(class_code=code)
         classroom.students.add(request.user)
-        return Response({"message": f"Successfully joined {classroom.name}"})
+        return Response({"message": f"Successfully joined {classroom.name}","classroom_id": classroom.id,})
     except Classroom.DoesNotExist:
         return Response({"error": "Invalid class code"}, status=status.HTTP_404_NOT_FOUND)
 
