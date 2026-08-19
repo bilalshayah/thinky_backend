@@ -24,4 +24,4 @@ class SkillSerializer(serializers.ModelSerializer):
 class QuestionBankSerializer(serializers.ModelSerializer):
     class Meta:
         model = Question
-        fields = ['id', 'question_text', 'difficulty', 'skill']
+        fields = "__all__"

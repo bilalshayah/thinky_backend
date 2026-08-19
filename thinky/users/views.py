@@ -229,6 +229,30 @@ def create_classroom(request):
         "class_code": classroom.class_code
     })
 
+@extend_schema(
+    responses={200: OpenApiTypes.OBJECT},
+    description="جلب كافة الصفوف التي أنشأها المعلم مع كود الصف وعدد الطلاب"
+)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_teacher_classrooms(request):
+    if request.user.role != 'TEACHER':
+        return Response({"error": "Unauthorized. Only teachers can view their classrooms."}, status=status.HTTP_403_FORBIDDEN)
+
+    classrooms = Classroom.objects.filter(teacher=request.user)
+    
+    data = [
+        {
+            "classroom_id": classroom.id,
+            "name": classroom.name,
+            "class_code": classroom.class_code,
+            "students_count": classroom.students.count(),
+            "created_at": classroom.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        for classroom in classrooms
+    ]
+
+    return Response(data, status=status.HTTP_200_OK)
 
 
 @extend_schema(request=JoinClassSerializer, responses={200: OpenApiTypes.OBJECT})

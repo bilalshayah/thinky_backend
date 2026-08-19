@@ -15,6 +15,7 @@ from .views import (
     create_homework, 
     add_homework_question, 
     get_student_classroom_homeworks,
+    get_teacher_classrooms
 )
 
 urlpatterns = [
@@ -25,8 +26,9 @@ urlpatterns = [
     path("info/", user_profile, name='user-profile'),
     path("cards/", get_user_library, name='user-library'),
     path("classroom/", create_classroom, name='create-classroom'),
-    path("parent/", parent_dashboard, name='parent-dashboard'),
-    path("teacher/", teacher_dashboard, name='teacher-dashboard'),
+    path("teacher/classrooms/", get_teacher_classrooms, name='get-teacher-classrooms'), # 👈 Added route
+    path("parent-dashboard/", parent_dashboard, name='parent-dashboard'),
+    path("teacher-dashboard/", teacher_dashboard, name='teacher-dashboard'),
     path("join/", join_classroom, name='join-classroom'),
     path("add_child/", add_child, name='add-child'),
     
