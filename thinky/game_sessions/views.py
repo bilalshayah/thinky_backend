@@ -127,6 +127,8 @@ def get_mission_questions(request, session_id):
         # 2. استدعاء محرك الـ AI لاتخاذ القرار وتعيين مجموعة من المجموعات الـ 5
         engine = AIDecisionEngine()
         decision = engine.get_decision(features, weak_skill, common_mistake, request.user, wrong_details)
+        session.current_group = decision.get("group", "N/A")
+        session.save(update_fields=['current_group'])
         
         allowed_difficulties = decision.get("suggested_difficulties", ["EASY", "MEDIUM"])
         

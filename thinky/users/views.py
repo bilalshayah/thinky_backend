@@ -162,9 +162,10 @@ def teacher_dashboard(request):
                 level_reports[lv_num] = []
             
             level_reports[lv_num].append({
-                "student_name": s.user.username,
-                "score": s.score
-            })
+    "student_name": s.user.username,
+    "score": s.score,
+    "ai_group": s.current_group if s.current_group else "N/A"  # 🌟 أضيفي هذا السطر هنا
+})
 
         results.append({
             "class_name": classroom.name,
@@ -190,6 +191,11 @@ def parent_dashboard(request):
     
     for child in children:
         sessions = GameSession.objects.filter(user=child, is_active=False).select_related('levelid').order_by('-id')
+        
+        # 🌟 جلب أحدث جلسة للحصول على النمط المحفوظ
+        latest_session = sessions.first()
+        student_group = latest_session.current_group if (latest_session and latest_session.current_group) else "N/A"
+
         level_history = [
             {
                 "level_number": s.levelid.level_number,
@@ -202,6 +208,7 @@ def parent_dashboard(request):
             "name": child.username,
             "total_points": child.total_points,
             "streak": child.streak_count,
+            "ai_group": student_group,  # 🌟 تم إضافة اسم المجموعة هنا
             "level_performance": level_history
         })
 
