@@ -182,21 +182,47 @@ def get_mission_questions(request, session_id):
     else: # phase == "training"
         used_ids = list(answered_ids)
 
-        # أخذ الأسئلة المرتبطة بالمهارة الضعيفة (من أسئلة المعلم إن وُجدت، ثم من النظام العام)
-        focused_teacher_qs = list(teacher_qs.filter(skill__name__iexact=weak_skill)[:3])
+        # 🌟 تصفية أسئلة المعلم المتبقية حسب الصعوبات المسموح بها والمهارة الضعيفة
+        focused_teacher_qs = list(
+            teacher_qs.filter(
+                skill__name__iexact=weak_skill,
+                difficulty__in=allowed_difficulties
+            )[:3]
+        )
         used_ids.extend([q.id for q in focused_teacher_qs])
 
         needed_focused = 3 - len(focused_teacher_qs)
-        focused_system_qs = list(level_system_qs.filter(skill__name__iexact=weak_skill).exclude(id__in=used_ids)[:needed_focused])
+        
+        # 🌟 تصفية أسئلة بنك النظام حسب الصعوبات المسموح بها والمهارة الضعيفة
+        focused_system_qs = list(
+            level_system_qs.filter(
+                skill__name__iexact=weak_skill,
+                difficulty__in=allowed_difficulties
+            ).exclude(id__in=used_ids)[:needed_focused]
+        )
         
         final_list = focused_teacher_qs + focused_system_qs
         used_ids.extend([q.id for q in focused_system_qs])
 
-        # تكملة المتبقي ليصل إلى 5 أسئلة من بنك النظام العام
+        # 🌟 تكملة المتبقي لـ 5 أسئلة مع الالتزام بالصعوبات المسموح بها أيضاً
         if len(final_list) < 5:
             needed = 5 - len(final_list)
-            remaining_qs = list(level_system_qs.exclude(id__in=used_ids).order_by('?')[:needed])
+            remaining_qs = list(
+                level_system_qs.filter(
+                    difficulty__in=allowed_difficulties
+                ).exclude(id__in=used_ids).order_by('?')[:needed]
+            )
             final_list.extend(remaining_qs)
+
+        # 🌟 احتياطي: في حال عدم وجود أسئلة كافية تطابق الصعوبات، تجلب من بنك الأسئلة المتاح المفلتر بالصعوبة
+        if len(final_list) < 5:
+            needed = 5 - len(final_list)
+            fallback_qs = list(
+                Question.objects.filter(
+                    difficulty__in=allowed_difficulties
+                ).exclude(id__in=[q.id for q in final_list]).order_by('?')[:needed]
+            )
+            final_list.extend(fallback_qs)
 
     # احترازي أخير: في حال نفاد كافة الأسئلة غير المجاب عليها نهائياً
     if not final_list:

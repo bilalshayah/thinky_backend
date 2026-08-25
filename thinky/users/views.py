@@ -153,19 +153,34 @@ def teacher_dashboard(request):
     
     for classroom in classrooms:
         student_ids = classroom.students.values_list('id', flat=True)
-        all_sessions = GameSession.objects.filter(user_id__in=student_ids, is_active=False).select_related('user', 'levelid')
+        
+        # 🌟 تصفية الجلسات المخصصة لهذه الشعبة بالتحديد عن طريق levelid__classroom
+        all_sessions = GameSession.objects.filter(
+            user_id__in=student_ids, 
+            is_active=False,
+            levelid__classroom=classroom  # 🌟 التعديل الجوهري: ربط المستوى بالشعبة الحالية فقط
+        ).select_related('user', 'levelid').order_by('user_id', 'levelid', '-id')
         
         level_reports = {}
+        seen_students_per_level = set()
+
         for s in all_sessions:
             lv_num = s.levelid.level_number
+            key = (lv_num, s.user_id)
+            
+            # أخذ أحدث نتيجة فقط للطالب في هذا المستوى الخاص بهذه الشعبة
+            if key in seen_students_per_level:
+                continue
+            seen_students_per_level.add(key)
+
             if lv_num not in level_reports:
                 level_reports[lv_num] = []
             
             level_reports[lv_num].append({
-    "student_name": s.user.username,
-    "score": s.score,
-    "ai_group": s.current_group if s.current_group else "N/A"  # 🌟 أضيفي هذا السطر هنا
-})
+                "student_name": s.user.username,
+                "score": s.score,
+                "ai_group": s.current_group if s.current_group else "N/A"
+            })
 
         results.append({
             "class_name": classroom.name,
@@ -397,6 +412,7 @@ def add_homework_question(request):
             option_d=data['option_d'],
             correct_answer=data['correct_answer'].upper(),
             hint=data.get('hint', ''),
+            points=data['points'],
             skill=default_skill,
             difficulty="MEDIUM",
             created_by=request.user
