@@ -24,6 +24,10 @@ from levels.models import Level, UserUnlockedCard
 from questions.models import Question, Skill
 from questions.serializers import QuestionBankSerializer
 
+from django.db.models import Avg, Count
+from answers.models import AnswerAttempt  # 🌟 تأكدي من استيراد الموديل
+
+
 
 # --- Serializers المساعدة لـ Swagger ---
 class UserProfileResponseSerializer(serializers.Serializer):
@@ -44,7 +48,41 @@ class AddChildInputSerializer(serializers.Serializer):
     child_username = serializers.CharField(help_text="اسم المستخدم الخاص بالطفل")
     child_password = serializers.CharField(write_only=True, help_text="كلمة مرور حساب الطفل للتأكيد")
 
+from ai_engine.classifier import AIDecisionEngine
 
+# 🌟 قاموس النصائح الاحتياطية المخصصة لأولياء الأمور
+PARENT_FALLBACK_ADVICE = {
+    "MASTER": "طفلك متفوق وسريع الفهم! شجعه على حل المسائل المتقدمة وتحدي نفسه دون خوف من الخطأ.",
+    "RECKLESS": "طفلك يتسرع أحياناً في اختيار الإجابة. ننصح بتدريبه على التأنّي وقراءة السؤال كاملاً قبل الحل.",
+    "HESITANT": "طفلك يتردد أثناء الحل ويحتاج إلى دعم معنوي. شجعه وامتدح محاولاته لتعزيز ثقته بنفسه.",
+    "STRUGGLING": "طفلك يواجه بعض الصعوبة في هذه المهارة. ننصح بمراجعة المفاهيم الأساسية معه ببطء ومساعدته بخطوات مبسطة.",
+    "GAMER": "طفلك يحب التجربة والاستكشاف! وجه شغفه نحو التفكير المنطقي قبل اختيار الإجابة."
+}
+
+def generate_gemini_advice(student_name, group_name):
+    # 1. إذا لم يكن للطفل نمط محدد بعد
+    if not group_name or group_name == "N/A":
+        return f"واصل تشجيع {student_name} ومتابعة أداءه في حل التمارين لتحديد نمطه السلوكي."
+
+    # 2. محاولة جلب النصيحة ديناميكياً من Gemini
+    try:
+        prompt = (
+            f"أنت خبير تربوي. اكتب نصيحة تربوية مبسطة ومباشرة في سطر واحد لولي أمر الطفل {student_name} "
+            f"الذي ينتمي للنمط السلوكي '{group_name}' لتوضيح كيف يمكن لولي الأمر مساعدته وتطوير مستواه في المنزل."
+        )
+        engine = AIDecisionEngine()
+        response_text = engine.get_ai_response(prompt)
+        
+        if response_text and len(response_text.strip()) > 5:
+            return response_text.strip()
+    except Exception:
+        pass
+
+    # 3. 🌟 الـ Fallback المخصص لولي الأمر في حال عدم استجابة الـ AI
+    return PARENT_FALLBACK_ADVICE.get(
+        group_name, 
+        f"استمر في تشجيع {student_name} ومتابعة تقدمه المستمر وتوفير البيئة المناسبة له."
+    )
 # --- Views ---
 
 @extend_schema(
@@ -181,10 +219,12 @@ def teacher_dashboard(request):
                 "score": s.score,
                 "ai_group": s.current_group if s.current_group else "N/A"
             })
+        class_ai_insight = generate_class_ai_summary(classroom.name, level_reports)
 
         results.append({
             "class_name": classroom.name,
             "class_code": classroom.class_code,
+            "class_ai_insight": class_ai_insight,  # 🌟 التقرير الذكي للشعبة
             "performance_by_level": level_reports
         })
 
@@ -205,11 +245,20 @@ def parent_dashboard(request):
     children_stats = []
     
     for child in children:
+        # 1. جلب الجلسات المكتملة للطفل
         sessions = GameSession.objects.filter(user=child, is_active=False).select_related('levelid').order_by('-id')
         
-        # 🌟 جلب أحدث جلسة للحصول على النمط المحفوظ
         latest_session = sessions.first()
         student_group = latest_session.current_group if (latest_session and latest_session.current_group) else "N/A"
+
+        # 2. 🌟 حساب إجمالي الأسئلة ومتوسط وقت الإجابة للطفل عبر جميع جلساته
+        child_attempts = AnswerAttempt.objects.filter(user=child)
+        
+        total_questions_answered = child_attempts.count()
+        
+        # حساب متوسط الوقت بالثواني وتقريبه لمنزلتين عشريتين
+        avg_time_data = child_attempts.aggregate(Avg('time_taken'))['time_taken__avg']
+        avg_time_seconds = round(avg_time_data, 2) if avg_time_data is not None else 0.0
 
         level_history = [
             {
@@ -219,12 +268,16 @@ def parent_dashboard(request):
             for s in sessions
         ]
 
+        # 3. إرجاع البيانات المحدثة بالكامل
         children_stats.append({
             "name": child.username,
             "total_points": child.total_points,
             "streak": child.streak_count,
-            "ai_group": student_group,  # 🌟 تم إضافة اسم المجموعة هنا
-            "level_performance": level_history
+            "ai_group": student_group,
+            "total_questions_answered": total_questions_answered,  # 🌟 إجمالي الأسئلة المجاوب عليها
+            "average_time_per_question_seconds": avg_time_seconds,  # 🌟 متوسط الوقت المستغرق بالسؤال (بالثواني)
+            "level_performance": level_history,
+            "ai_advice": generate_gemini_advice(child.username, student_group),
         })
 
     return Response(children_stats)
@@ -451,3 +504,34 @@ def get_student_classroom_homeworks(request, classroom_id):
 
     except Classroom.DoesNotExist:
         return Response({"error": "You are not enrolled in this classroom"}, status=status.HTTP_404_NOT_FOUND)
+
+
+def generate_class_ai_summary(class_name, level_reports):
+    # إذا لم تكن هناك بيانات للطلاب بعد
+    if not level_reports:
+        return f"لا توجد نشاطات كافية حالياً لتوليد تقرير الذكاء الاصطناعي لشعبة {class_name}."
+
+    # تجميع الأنماط السلوكية والدرجات المتاحة للشعبة
+    groups_summary = []
+    for lv, students in level_reports.items():
+        for s in students:
+            groups_summary.append(f"الطالب {s['student_name']}: النمط ({s['ai_group']}) - الدرجة ({s['score']}%)")
+
+    students_data_str = ", ".join(groups_summary)
+
+    try:
+        prompt = (
+            f"أنت مستشار تعليمي ذكي. قم بتحليل أداء الطلاب التالي في شعبة '{class_name}':\n"
+            f"{students_data_str}\n"
+            f"قدم للمعلم ملخصاً تحليلياً في سطرين يوضح: 1) النمط العام أو الملاحظة الأساسية على أداء الشعبة، 2) نصيحة تعليمية مخصصة للمعلم لتطوير مستواهم."
+        )
+        engine = AIDecisionEngine()
+        response_text = engine.get_ai_response(prompt)
+        
+        if response_text and len(response_text.strip()) > 5:
+            return response_text.strip()
+    except Exception:
+        pass
+
+    # الـ Fallback الاحتياطي المعلم عند تعثر الـ AI
+    return f"شعبة {class_name} تسير بشكل جيد. يُنصح بمتابعة الطلاب الذين ينتمون لنمطي HESITANT و STRUGGLING وتزويدهم بتمارين إضافية."

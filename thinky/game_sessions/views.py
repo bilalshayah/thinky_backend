@@ -82,6 +82,11 @@ def start_session(request):
     description="تقوم الدالة بتحليل أول 5 محاولات للطفل برمجياً وسلوكياً عند انتقاله لطور التدريب، وتحديد نمطه السلوكي، ثم استدعاء جميناي لبناء النص التربوي المبسط وإرجاع قائمة الأسئلة المخصصة لعلاج المهارة الضعيفة.",
     responses={200: GetMissionQuestionsResponseSerializer}
 )
+@extend_schema(
+    summary="جلب أسئلة المرحلة الحالية ومعالجة رد الذكاء الاصطناعي",
+    description="تقوم الدالة بتحليل أول 5 محاولات للطفل برمجياً وسلوكياً عند انتقاله لطور التدريب، وتحديد نمطه السلوكي، ثم استدعاء جميناي لبناء النص التربوي المبسط وإرجاع قائمة الأسئلة الخمسة المخصصة لعلاج المهارة الضعيفة.",
+    responses={200: GetMissionQuestionsResponseSerializer}
+)
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_mission_questions(request, session_id):
@@ -97,7 +102,6 @@ def get_mission_questions(request, session_id):
 
     all_session_attempts = AnswerAttempt.objects.filter(session=session).order_by('-id')
     
-    # 🌟 الـ AI يتدخل ويعمل بالكامل فور الانتقال لطور الـ training لبناء خطة الدعم المخصصة
     if all_session_attempts.exists() and session.phase == "training":
         wrong_attempts = all_session_attempts.filter(is_correct=False)
         wrong_details = []
@@ -121,10 +125,8 @@ def get_mission_questions(request, session_id):
                 'mistake_type': getattr(a, 'mistake_type', 'None')
             })
 
-        # 1. استخراج الميزات الأساسية للمظهر السلوكي
         features, weak_skill, common_mistake = extract_behavior_features(attempts_list)
         
-        # 2. استدعاء محرك الـ AI لاتخاذ القرار وتعيين مجموعة من المجموعات الـ 5
         engine = AIDecisionEngine()
         decision = engine.get_decision(features, weak_skill, common_mistake, request.user, wrong_details)
         session.current_group = decision.get("group", "N/A")
@@ -132,11 +134,9 @@ def get_mission_questions(request, session_id):
         
         allowed_difficulties = decision.get("suggested_difficulties", ["EASY", "MEDIUM"])
         
-        # 3. مهمة الباك إند الصافية: تمرير البرومبت الجاهز واستقبال النص النهائي من خادم الـ AI
         ready_prompt = decision.get("gemini_prompt", "شجع الطالب بأسلوب مبسط")
         final_msg = engine.get_ai_response(ready_prompt)
 
-        # 4. تحديد طبيعة حركة الشخصيات داخل طور التدريب بناءً على التصنيف المستلم
         character_type = "none"
         if session.phase == "training":
             if decision.get("group") == "MASTER":
@@ -152,37 +152,65 @@ def get_mission_questions(request, session_id):
             "character_type": character_type  
         }
 
-    # === الجزء المصلح لاختيار الأسئلة وتكملة الـ AI عند انتهاء أسئلة المعلم ===
-    
+    # === 🌟 التحقق المباشر والصارم من انضمام الطالب لشعبة هذا المعلم ===
     answered_ids = AnswerAttempt.objects.filter(session=session).values_list('question_id', flat=True)
     level = session.levelid
     is_homework = getattr(level, 'is_homework', False)
     teacher = getattr(level, 'teacher', None)
 
-    # 1. أسئلة المعلم المتبقية في الواجب والتي لم يُجب عليها الطالب بعد
-    teacher_qs = Question.objects.filter(level=level, created_by=teacher).exclude(id__in=answered_ids) if (is_homework and teacher) else Question.objects.none()
+    is_student_in_class = False
+    if teacher:
+        from users.models import Classroom
+        is_student_in_class = Classroom.objects.filter(
+            teacher=teacher, 
+            students=request.user
+        ).exists()
+
+    # 🌟 يجلب أسئلة المعلم فقط وفقط إذا كان الواجب مخصصاً والطالب عضو فعلي في إحدى شعب هذا المعلم
+    if is_homework and teacher and is_student_in_class:
+        teacher_qs = Question.objects.filter(level=level, created_by=teacher).exclude(id__in=answered_ids)
+    else:
+        teacher_qs = Question.objects.none()
     
-    # 2. بنك أسئلة النظام العام غير المجاب عليها (نتحقق من نفس المستوى أولاً، وإذا كان الواجب مخصصاً جلبنا أسئلة بنك النظام العامة)
+    # 🌟 بنك أسئلة النظام العام (created_by is NULL)
     system_qs = Question.objects.filter(created_by__isnull=True).exclude(id__in=answered_ids)
     level_system_qs = system_qs.filter(level=level)
     if not level_system_qs.exists():
         level_system_qs = system_qs
 
+    final_list = []
+
     if session.phase == "analysis":
-        # عرض أسئلة المعلم أولاً
-        final_list = list(teacher_qs[:5])
+        # 1. أسئلة المعلم المتاحة
+        if teacher_qs.exists():
+            analysis_teacher_qs = teacher_qs.filter(difficulty__in=allowed_difficulties)
+            final_list.extend(list(analysis_teacher_qs[:5]))
         
-        # إذا كانت أسئلة المعلم أقل من 5، يكمل النظام من أسئلة البنك العام
+        # 2. إكمال 5 أسئلة من بنك المستوى أولاً (مفلترة بالصعوبة)
         if len(final_list) < 5:
             needed = 5 - len(final_list)
             used_ids = [q.id for q in final_list]
-            additional_qs = list(level_system_qs.exclude(id__in=used_ids).order_by('?')[:needed])
-            final_list.extend(additional_qs)
+            
+            level_qs = list(
+                level_system_qs.filter(
+                    difficulty__in=allowed_difficulties
+                ).exclude(id__in=used_ids).order_by('?')[:needed]
+            )
+            final_list.extend(level_qs)
+
+        # 3. خطة طوارئ مدمجة: إذا لم تكفِ أسئلة المستوى، اسحب من أسئلة النظام المتاحة ككل لتأكيد إرجاع 5 أسئلة دائماً
+        if len(final_list) < 5:
+            needed = 5 - len(final_list)
+            used_ids = [q.id for q in final_list]
+            
+            fallback_qs = list(
+                system_qs.exclude(id__in=used_ids).order_by('?')[:needed]
+            )
+            final_list.extend(fallback_qs)
 
     else: # phase == "training"
         used_ids = list(answered_ids)
 
-        # 🌟 تصفية أسئلة المعلم المتبقية حسب الصعوبات المسموح بها والمهارة الضعيفة
         focused_teacher_qs = list(
             teacher_qs.filter(
                 skill__name__iexact=weak_skill,
@@ -193,7 +221,6 @@ def get_mission_questions(request, session_id):
 
         needed_focused = 3 - len(focused_teacher_qs)
         
-        # 🌟 تصفية أسئلة بنك النظام حسب الصعوبات المسموح بها والمهارة الضعيفة
         focused_system_qs = list(
             level_system_qs.filter(
                 skill__name__iexact=weak_skill,
@@ -204,7 +231,6 @@ def get_mission_questions(request, session_id):
         final_list = focused_teacher_qs + focused_system_qs
         used_ids.extend([q.id for q in focused_system_qs])
 
-        # 🌟 تكملة المتبقي لـ 5 أسئلة مع الالتزام بالصعوبات المسموح بها أيضاً
         if len(final_list) < 5:
             needed = 5 - len(final_list)
             remaining_qs = list(
@@ -214,23 +240,16 @@ def get_mission_questions(request, session_id):
             )
             final_list.extend(remaining_qs)
 
-        # 🌟 احتياطي: في حال عدم وجود أسئلة كافية تطابق الصعوبات، تجلب من بنك الأسئلة المتاح المفلتر بالصعوبة
         if len(final_list) < 5:
             needed = 5 - len(final_list)
             fallback_qs = list(
-                Question.objects.filter(
-                    difficulty__in=allowed_difficulties
-                ).exclude(id__in=[q.id for q in final_list]).order_by('?')[:needed]
+                Question.objects.exclude(id__in=[q.id for q in final_list]).order_by('?')[:needed]
             )
             final_list.extend(fallback_qs)
 
-    # احترازي أخير: في حال نفاد كافة الأسئلة غير المجاب عليها نهائياً
-    if not final_list:
-        final_list = list(Question.objects.exclude(id__in=answered_ids)[:5])
-    
     return Response({
         "current_phase": session.phase,
-        "is_homework": is_homework,
+        "is_homework": is_homework and is_student_in_class,
         "allowed_difficulties": allowed_difficulties,
         "questions": QuestionGameSerializer(final_list, many=True).data,
         "ai_feedback": ai_feedback_data
