@@ -412,7 +412,6 @@ def add_homework_question(request):
             option_d=data['option_d'],
             correct_answer=data['correct_answer'].upper(),
             hint=data.get('hint', ''),
-            points=data['points'],
             skill=default_skill,
             difficulty="MEDIUM",
             created_by=request.user

@@ -86,6 +86,6 @@ class AddSingleQuestionSerializer(serializers.Serializer):
     option_c = serializers.CharField(required=True)
     option_d = serializers.CharField(required=True)
     correct_answer = serializers.CharField(max_length=1)
-    points= serializers.IntegerField(required=True)
+    #points= serializers.IntegerField(required=True)
     hint = serializers.CharField(required=False, allow_blank=True, default="")
     skill_name = serializers.CharField(required=False, default="General") # إتاحة اختيار المهارة
