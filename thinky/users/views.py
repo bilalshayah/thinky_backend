@@ -135,7 +135,6 @@ class UserDetailView(RetrieveUpdateDestroyAPIView):
 
 class UserStreakResponseSerializer(serializers.Serializer):
     streak_count = serializers.IntegerField(help_text="عدد أيام الـ Streak الحالية للمستخدم")
-    last_activity_date = serializers.DateField(help_text="تاريخ آخر نشاط للمستخدم")
 
 @extend_schema(
     responses={200: UserStreakResponseSerializer},
@@ -156,7 +155,6 @@ def get_user_streak(request):
 
     return Response({
         "streak_count": user.streak_count,
-        "last_activity_date": user.last_activity_date
     }, status=status.HTTP_200_OK)
 
 @extend_schema(
