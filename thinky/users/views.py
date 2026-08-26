@@ -36,7 +36,6 @@ class UserProfileResponseSerializer(serializers.Serializer):
     total_points = serializers.IntegerField()
     gender = serializers.CharField()
     gender_display = serializers.CharField()
-    streak_count = serializers.IntegerField()
 
 class ClassSerializer(serializers.Serializer):
     name = serializers.CharField()
@@ -146,7 +145,7 @@ def get_user_streak(request):
     user = request.user
     today = date.today()
 
-    # التحقق مما إذا كان المستخدم قد انقطع عن اللعب لأكثر من يوم لتصفير الـ Streak
+    # تصفير الـ Streak إذا مر أكثر من يوم على آخر نشاط لعب
     if user.last_activity_date:
         days_passed = (today - user.last_activity_date).days
         if days_passed > 1:
@@ -168,11 +167,6 @@ def user_profile(request):
     today = date.today()
     age = None
 
-    if user.last_activity_date:
-        days_passed = (today - user.last_activity_date).days
-        if days_passed > 1:
-            user.streak_count = 0
-            user.save(update_fields=['streak_count'])
 
     if user.birthday:
         birthday = user.birthday
@@ -184,7 +178,6 @@ def user_profile(request):
         "total_points": user.total_points,
         "gender": user.gender,
         "gender_display": user.get_gender_display(),
-        "streak_count": user.streak_count
     }
 
     return Response(data)
