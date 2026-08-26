@@ -15,7 +15,8 @@ from .views import (
     create_homework, 
     add_homework_question, 
     get_student_classroom_homeworks,
-    get_teacher_classrooms
+    get_teacher_classrooms,
+    get_user_streak
 )
 
 urlpatterns = [
@@ -38,5 +39,10 @@ urlpatterns = [
     path('homeworks/', create_homework, name='create_homework'),
     path('homework-questions/', add_homework_question, name='add_homework_question'),
     path('classrooms/<int:classroom_id>/homeworks/', get_student_classroom_homeworks, name='student-classroom-homeworks'),
+
+
+    path('user/streak/', get_user_streak, name='user-streak'),
+
+
 
 ]

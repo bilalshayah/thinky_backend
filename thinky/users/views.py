@@ -133,6 +133,32 @@ class UserDetailView(RetrieveUpdateDestroyAPIView):
     serializer_class = UserSerializer
 
 
+class UserStreakResponseSerializer(serializers.Serializer):
+    streak_count = serializers.IntegerField(help_text="عدد أيام الـ Streak الحالية للمستخدم")
+    last_activity_date = serializers.DateField(help_text="تاريخ آخر نشاط للمستخدم")
+
+@extend_schema(
+    responses={200: UserStreakResponseSerializer},
+    description="جلب عدد أيام الـ Streak الخاصة بالطفل/المستخدم بشكل منفصل"
+)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_user_streak(request):
+    user = request.user
+    today = date.today()
+
+    # التحقق مما إذا كان المستخدم قد انقطع عن اللعب لأكثر من يوم لتصفير الـ Streak
+    if user.last_activity_date:
+        days_passed = (today - user.last_activity_date).days
+        if days_passed > 1:
+            user.streak_count = 0
+            user.save(update_fields=['streak_count'])
+
+    return Response({
+        "streak_count": user.streak_count,
+        "last_activity_date": user.last_activity_date
+    }, status=status.HTTP_200_OK)
+
 @extend_schema(
     responses={200: UserProfileResponseSerializer},
     description="جلب بيانات الملف الشخصي للمستخدم"
